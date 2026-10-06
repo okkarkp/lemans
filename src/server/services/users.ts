@@ -5,7 +5,7 @@ import { pool, withTx } from "../db";
 import { now } from "../clock";
 import { appendLedger } from "../ledger";
 import { isIsoDate, monthBounds, type IsoDate } from "../domain/calendar";
-import { conflict, notFound, rejected } from "../errors";
+import { badRequest, conflict, notFound, rejected } from "../errors";
 import type { CurrentUser, Role } from "../auth/session";
 
 /**
@@ -24,7 +24,8 @@ export const createUserInput = z.object({
   role: z.enum(ROLES),
   roleTitle: z.string().trim().min(2).max(60).optional(),
   startDate: isoDate.optional(),
-}).refine((v) => v.role !== "PERSONNEL" || (v.roleTitle && v.startDate), "Service personnel need a job title and an assignment start date.");
+  teamId: z.string().min(1).optional(),
+}).refine((v) => v.role !== "PERSONNEL" || (v.roleTitle && v.startDate && v.teamId), "Service personnel need a job title, a team and an assignment start date.");
 
 export const updateUserInput = z.object({
   displayName: z.string().trim().min(2).max(100).optional(),
@@ -32,22 +33,24 @@ export const updateUserInput = z.object({
   roleTitle: z.string().trim().min(2).max(60).optional(),
   startDate: isoDate.optional(),
   endDate: isoDate.nullable().optional(),
+  teamId: z.string().min(1).optional(),
 }).refine((v) => Object.values(v).some((x) => x !== undefined), "Nothing to change.");
 
 export const deactivateInput = z.object({ lastDay: isoDate.optional() });
 
 export interface UserView {
   id: string; displayName: string; role: Role; active: boolean; createdAt: string;
-  personnelId: string | null; roleTitle: string | null; startDate: IsoDate | null; endDate: IsoDate | null;
+  personnelId: string | null; roleTitle: string | null; startDate: IsoDate | null; endDate: IsoDate | null; teamId: string | null;
 }
 
 const USER_SELECT = `
-  SELECT u.id, u.display_name, u.role, u.active, u.created_at, u.personnel_id, p.role_title, p.start_date, p.end_date
+  SELECT u.id, u.display_name, u.role, u.active, u.created_at, u.personnel_id, p.role_title, p.start_date, p.end_date, p.team_id
   FROM app_user u LEFT JOIN personnel p ON p.id = u.personnel_id`;
 const mapUser = (r: Record<string, unknown>): UserView => ({
   id: r.id as string, displayName: r.display_name as string, role: r.role as Role, active: r.active as boolean,
   createdAt: (r.created_at as Date).toISOString(), personnelId: (r.personnel_id as string) ?? null,
   roleTitle: (r.role_title as string) ?? null, startDate: (r.start_date as string) ?? null, endDate: (r.end_date as string) ?? null,
+  teamId: (r.team_id as string) ?? null,
 });
 
 export async function listUsers(): Promise<UserView[]> {
@@ -106,9 +109,10 @@ export async function createUser(admin: CurrentUser, input: z.infer<typeof creat
     if (input.role === "PERSONNEL") {
       const max = await tx.query("SELECT coalesce(max(substring(id from 3)::int), 0) AS n FROM personnel WHERE id ~ '^SP[0-9]+$'");
       personnelId = `SP${String(Number(max.rows[0].n) + 1).padStart(2, "0")}`;
+      if (!(await tx.query("SELECT 1 FROM team WHERE id = $1", [input.teamId])).rowCount) throw badRequest("TEAM_UNKNOWN", "Choose an existing team.");
       await tx.query(
-        "INSERT INTO personnel (id, display_name, role_title, start_date) VALUES ($1, $2, $3, $4)",
-        [personnelId, input.displayName, input.roleTitle, input.startDate]);
+        "INSERT INTO personnel (id, display_name, role_title, start_date, team_id) VALUES ($1, $2, $3, $4, $5)",
+        [personnelId, input.displayName, input.roleTitle, input.startDate, input.teamId]);
     }
     await tx.query(
       "INSERT INTO app_user (id, display_name, role, personnel_id, created_at) VALUES ($1, $2, $3, $4, $5)",
@@ -116,7 +120,7 @@ export async function createUser(admin: CurrentUser, input: z.infer<typeof creat
     // The ledger records identifiers and roles, not names: names are personal data and can change.
     await appendLedger(tx, {
       actorId: admin.id, eventType: "USER_CREATED", occurredAt: n.instant,
-      payload: { userId: input.id, role: input.role, personnelId, startDate: input.startDate ?? null },
+      payload: { userId: input.id, role: input.role, personnelId, startDate: input.startDate ?? null, teamId: input.teamId ?? null },
     });
     return { id: input.id, personnelId };
   });
@@ -143,7 +147,7 @@ export async function updateUser(admin: CurrentUser, id: string, input: z.infer<
       if (u.personnelId) await tx.query("UPDATE personnel SET display_name = $2 WHERE id = $1", [u.personnelId, input.displayName]);
       changes.displayName = true; // the value itself stays out of the ledger
     }
-    const periodTouched = input.startDate !== undefined || input.endDate !== undefined || input.roleTitle !== undefined;
+    const periodTouched = input.startDate !== undefined || input.endDate !== undefined || input.roleTitle !== undefined || input.teamId !== undefined;
     if (periodTouched) {
       if (!u.personnelId) throw rejected("NOT_PERSONNEL", "Job title and assignment dates apply to service personnel only.");
       const start = input.startDate ?? u.startDate!;
@@ -152,6 +156,11 @@ export async function updateUser(admin: CurrentUser, id: string, input: z.infer<
         await assertPeriodValid(tx, u.personnelId, start, end, { start: u.startDate!, end: u.endDate });
         await tx.query("UPDATE personnel SET start_date = $2, end_date = $3 WHERE id = $1", [u.personnelId, start, end]);
         changes.period = { from: [u.startDate, u.endDate], to: [start, end] };
+      }
+      if (input.teamId && input.teamId !== u.teamId) {
+        if (!(await tx.query("SELECT 1 FROM team WHERE id = $1", [input.teamId])).rowCount) throw badRequest("TEAM_UNKNOWN", "Choose an existing team.");
+        await tx.query("UPDATE personnel SET team_id = $2 WHERE id = $1", [u.personnelId, input.teamId]);
+        changes.team = { from: u.teamId, to: input.teamId };
       }
       if (input.roleTitle && input.roleTitle !== u.roleTitle) {
         await tx.query("UPDATE personnel SET role_title = $2 WHERE id = $1", [u.personnelId, input.roleTitle]);

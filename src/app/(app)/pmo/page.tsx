@@ -10,8 +10,8 @@ import { LiveTeam } from "../live-team";
 export const metadata: Metadata = { title: "Exceptions" };
 
 export default async function PmoPage() {
-  await requirePageUser(["PMO"]);
-  const [d, live] = await Promise.all([pmoDashboard(), liveTeamView()]);
+  const user = await requirePageUser(["PMO"]);
+  const [d, live] = await Promise.all([pmoDashboard(), liveTeamView(user)]);
   const { MISSING_CHECKIN_ALERT_TIME: alertTime, ATTENDANCE_FLOOR: floor } = config();
 
   return (

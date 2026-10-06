@@ -6,7 +6,7 @@ import { longDate, pct } from "@/lib/format";
 import { Alert, Badge, buttonClass, fieldClass } from "@/components/ui";
 
 interface Request {
-  id: number; personnelName: string; leaveType: string; startDate: string; endDate: string; backupName: string;
+  id: number; personnelName: string; leaveType: string; startDate: string; endDate: string; backupName: string; teamName: string;
   coverage: { minRatio: number; passes: boolean; workingDays: number; floor: number };
 }
 
@@ -29,7 +29,7 @@ export function LeaveDecision({ request: r }: { request: Request }) {
         <div>
           <p className="font-semibold">{r.personnelName} <span className="font-normal text-muted">- {r.leaveType}</span></p>
           <p className="text-sm text-muted">{longDate(r.startDate)} to {longDate(r.endDate)} ({r.coverage.workingDays} working days)</p>
-          <p className="text-sm text-muted">Backup: {r.backupName}</p>
+          <p className="text-sm text-muted">Team: {r.teamName}. Backup: {r.backupName}</p>
         </div>
         <Badge tone={r.coverage.passes ? "ok" : "bad"}>Coverage {pct(r.coverage.minRatio)}</Badge>
       </div>

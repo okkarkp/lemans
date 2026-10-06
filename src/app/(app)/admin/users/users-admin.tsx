@@ -8,12 +8,13 @@ import { Alert, Badge, buttonClass, Card, Empty, fieldClass, labelClass } from "
 type Role = "PERSONNEL" | "SUPERVISOR" | "PMO" | "ADMIN";
 interface User {
   id: string; displayName: string; role: Role; active: boolean; createdAt: string;
-  personnelId: string | null; roleTitle: string | null; startDate: string | null; endDate: string | null;
+  personnelId: string | null; roleTitle: string | null; startDate: string | null; endDate: string | null; teamId: string | null;
 }
+export interface Team { id: string; name: string }
 const ROLE_LABEL: Record<Role, string> = { PERSONNEL: "Service personnel", SUPERVISOR: "IRAS supervisor", PMO: "Accenture PMO", ADMIN: "System administrator" };
 const STAFF_ROLES: Role[] = ["SUPERVISOR", "PMO", "ADMIN"];
 
-export function UsersAdmin({ users, selfId, today }: { users: User[]; selfId: string; today: string }) {
+export function UsersAdmin({ users, selfId, today, teams }: { users: User[]; selfId: string; today: string; teams: Team[] }) {
   const [query, setQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState<"" | Role>("");
   const [status, setStatus] = useState<"active" | "inactive" | "all">("active");
@@ -52,21 +53,21 @@ export function UsersAdmin({ users, selfId, today }: { users: User[]; selfId: st
         {flash && <div className="mb-4"><Alert tone="ok">{flash}</Alert></div>}
         {shown.length === 0 ? <Empty>No users match these filters.</Empty> : (
           <ul className="divide-y divide-line">
-            {shown.map((u) => <UserRow key={u.id} user={u} self={u.id === selfId} today={today} onDone={setFlash} />)}
+            {shown.map((u) => <UserRow key={u.id} user={u} self={u.id === selfId} today={today} teams={teams} onDone={setFlash} />)}
           </ul>
         )}
       </Card>
-      <Card title="Add a user"><CreateUser today={today} onDone={setFlash} /></Card>
+      <Card title="Add a user"><CreateUser today={today} teams={teams} onDone={setFlash} /></Card>
     </div>
   );
 }
 
-function UserRow({ user: u, self, today, onDone }: { user: User; self: boolean; today: string; onDone: (m: string) => void }) {
+function UserRow({ user: u, self, today, teams, onDone }: { user: User; self: boolean; today: string; teams: Team[]; onDone: (m: string) => void }) {
   const router = useRouter();
   const [mode, setMode] = useState<"view" | "edit" | "deactivate">("view");
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
-  const [form, setForm] = useState({ displayName: u.displayName, role: u.role, roleTitle: u.roleTitle ?? "", startDate: u.startDate ?? "", endDate: u.endDate ?? "" });
+  const [form, setForm] = useState({ displayName: u.displayName, role: u.role, roleTitle: u.roleTitle ?? "", startDate: u.startDate ?? "", endDate: u.endDate ?? "", teamId: u.teamId ?? "" });
   const [lastDay, setLastDay] = useState(today);
 
   const run = (url: string, init: { method?: string; body: unknown }, ok: string) => start(async () => {
@@ -82,6 +83,7 @@ function UserRow({ user: u, self, today, onDone }: { user: User; self: boolean; 
     if (u.personnelId) {
       if (form.roleTitle.trim() !== (u.roleTitle ?? "")) body.roleTitle = form.roleTitle;
       if (form.startDate !== u.startDate) body.startDate = form.startDate;
+      if (form.teamId !== u.teamId) body.teamId = form.teamId;
       if ((form.endDate || null) !== u.endDate) body.endDate = form.endDate || null;
     }
     if (Object.keys(body).length === 0) return setError("Nothing has changed.");
@@ -98,7 +100,7 @@ function UserRow({ user: u, self, today, onDone }: { user: User; self: boolean; 
           </p>
           <p className="text-sm text-muted">
             <span className="font-mono text-xs">{u.id}</span> - {ROLE_LABEL[u.role]}
-            {u.personnelId && <> - {u.personnelId}, {u.roleTitle}</>}
+            {u.personnelId && <> - {u.personnelId}, {u.roleTitle}, {teams.find((t) => t.id === u.teamId)?.name}</>}
           </p>
           {u.personnelId && (
             <p className="text-xs text-muted">Assigned {longDate(u.startDate!)}{u.endDate ? ` to ${longDate(u.endDate)}` : " - no end date"}</p>
@@ -136,6 +138,12 @@ function UserRow({ user: u, self, today, onDone }: { user: User; self: boolean; 
           </div>
           {u.personnelId && (
             <>
+              <div>
+                <label htmlFor={`${idBase}-team`} className={labelClass}>Team</label>
+                <select id={`${idBase}-team`} className={fieldClass} value={form.teamId} onChange={(e) => setForm({ ...form, teamId: e.target.value })}>
+                  {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </div>
               <div>
                 <label htmlFor={`${idBase}-title`} className={labelClass}>Job title</label>
                 <input id={`${idBase}-title`} className={fieldClass} value={form.roleTitle} onChange={(e) => setForm({ ...form, roleTitle: e.target.value })} />
@@ -185,9 +193,9 @@ function UserRow({ user: u, self, today, onDone }: { user: User; self: boolean; 
   );
 }
 
-function CreateUser({ today, onDone }: { today: string; onDone: (m: string) => void }) {
+function CreateUser({ today, teams, onDone }: { today: string; teams: Team[]; onDone: (m: string) => void }) {
   const router = useRouter();
-  const empty = { id: "", displayName: "", role: "PERSONNEL" as Role, roleTitle: "", startDate: today };
+  const empty = { id: "", displayName: "", role: "PERSONNEL" as Role, roleTitle: "", startDate: today, teamId: teams[0]?.id ?? "" };
   const [form, setForm] = useState(empty);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
@@ -198,7 +206,7 @@ function CreateUser({ today, onDone }: { today: string; onDone: (m: string) => v
       e.preventDefault();
       if (!/^[a-z0-9][a-z0-9._-]{2,63}$/.test(form.id.trim().toLowerCase())) return setError("Login ID must be 3-64 characters: letters, digits, dot, dash or underscore.");
       if (form.displayName.trim().length < 2) return setError("Enter a name.");
-      if (personnel && (form.roleTitle.trim().length < 2 || !form.startDate)) return setError("Service personnel need a job title and an assignment start date.");
+      if (personnel && (form.roleTitle.trim().length < 2 || !form.startDate || !form.teamId)) return setError("Service personnel need a job title, a team and an assignment start date.");
       start(async () => {
         const body = personnel ? form : { id: form.id, displayName: form.displayName, role: form.role };
         const r = await api<{ id: string; personnelId: string | null }>("/api/admin/users", { body });
@@ -224,6 +232,12 @@ function CreateUser({ today, onDone }: { today: string; onDone: (m: string) => v
       </div>
       {personnel && (
         <>
+          <div>
+            <label htmlFor="new-team" className={labelClass}>Team</label>
+            <select id="new-team" className={fieldClass} value={form.teamId} onChange={(e) => setForm({ ...form, teamId: e.target.value })}>
+              {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </div>
           <div>
             <label htmlFor="new-title" className={labelClass}>Job title</label>
             <input id="new-title" className={fieldClass} value={form.roleTitle} onChange={(e) => setForm({ ...form, roleTitle: e.target.value })} />

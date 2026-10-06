@@ -6,9 +6,10 @@ import { now } from "../clock";
 import { appendLedger } from "../ledger";
 import { addDays, isIsoDate, workingDaysBetween, type IsoDate } from "../domain/calendar";
 import { computeCoverage, type CoverageResult } from "../domain/coverage";
-import { badRequest, conflict, notFound, rejected } from "../errors";
+import { badRequest, conflict, forbidden, notFound, rejected } from "../errors";
 import type { CurrentUser } from "../auth/session";
 import { holidaySet, isAssigned, listPersonnel } from "./reference";
+import { approvableTeams } from "./teams";
 
 export const LEAVE_TYPES = { ANNUAL: "Annual leave", MEDICAL: "Medical leave", CHILDCARE: "Childcare leave", OTHER: "Other leave" } as const;
 const MAX_SPAN_DAYS = 30;
@@ -97,9 +98,12 @@ export async function decideLeave(user: CurrentUser, requestId: number, input: z
   return withTx(async (tx) => {
     const n = await now(tx);
     await tx.query("SELECT pg_advisory_xact_lock(72026002)");
-    const r = await tx.query("SELECT * FROM leave_request WHERE id = $1 FOR UPDATE", [requestId]);
+    const r = await tx.query(
+      "SELECT l.*, p.team_id FROM leave_request l JOIN personnel p ON p.id = l.personnel_id WHERE l.id = $1 FOR UPDATE OF l", [requestId]);
     const req = r.rows[0];
     if (!req) throw notFound("Leave request");
+    // Object-level check: being a supervisor is not enough; it must be a team this user may approve today.
+    if (!(await approvableTeams(tx, user, n.date)).has(req.team_id)) throw forbidden();
     if (req.status !== "PENDING") throw conflict("ALREADY_DECIDED", `This request is already ${req.status.toLowerCase()}.`);
 
     if (input.decision === "APPROVE") {
@@ -120,22 +124,25 @@ export async function decideLeave(user: CurrentUser, requestId: number, input: z
 
 export interface LeaveView {
   id: number; personnelId: string; personnelName: string; leaveType: string; startDate: IsoDate; endDate: IsoDate;
-  backupName: string; status: string; submittedAt: string; decisionNote: string | null;
+  backupName: string; status: string; submittedAt: string; decisionNote: string | null; teamName: string;
 }
 const LEAVE_SELECT = `
   SELECT l.id, l.personnel_id, p.display_name AS personnel_name, l.leave_type, l.start_date, l.end_date,
-         b.display_name AS backup_name, l.status, l.submitted_at, l.decision_note
-  FROM leave_request l JOIN personnel p ON p.id = l.personnel_id JOIN personnel b ON b.id = l.backup_personnel_id`;
+         b.display_name AS backup_name, l.status, l.submitted_at, l.decision_note, t.name AS team_name
+  FROM leave_request l JOIN personnel p ON p.id = l.personnel_id JOIN personnel b ON b.id = l.backup_personnel_id
+  JOIN team t ON t.id = p.team_id`;
 const mapLeave = (r: Record<string, unknown>): LeaveView => ({
   id: Number(r.id), personnelId: r.personnel_id as string, personnelName: r.personnel_name as string,
   leaveType: LEAVE_TYPES[r.leave_type as keyof typeof LEAVE_TYPES], startDate: r.start_date as string, endDate: r.end_date as string,
   backupName: r.backup_name as string, status: r.status as string, submittedAt: (r.submitted_at as Date).toISOString(),
-  decisionNote: (r.decision_note as string | null) ?? null,
+  decisionNote: (r.decision_note as string | null) ?? null, teamName: r.team_name as string,
 });
 
-export async function listPending(): Promise<(LeaveView & { coverage: CoverageCheck })[]> {
+/** Pending requests this supervisor may decide today (own teams and delegated ones). */
+export async function listPending(user: CurrentUser): Promise<(LeaveView & { coverage: CoverageCheck })[]> {
   const db = pool();
-  const r = await db.query(`${LEAVE_SELECT} WHERE l.status = 'PENDING' ORDER BY l.start_date LIMIT 100`);
+  const teams = [...(await approvableTeams(db, user, (await now(db)).date))];
+  const r = await db.query(`${LEAVE_SELECT} WHERE l.status = 'PENDING' AND p.team_id = ANY($1) ORDER BY l.start_date LIMIT 100`, [teams]);
   return Promise.all(r.rows.map(async (row) => {
     const v = mapLeave(row);
     return { ...v, coverage: await coverageFor(db, v.personnelId, v.startDate, v.endDate, v.id) };

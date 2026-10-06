@@ -16,7 +16,7 @@ describe("user management", () => {
   beforeEach(() => reseed());
 
   it("creates service personnel with the next SP number and an assignment period, without names in the ledger", async () => {
-    const r = await createUser(admin, { id: "new.dev", displayName: "Personnel 07", role: "PERSONNEL", roleTitle: "Developer", startDate: "2026-09-21" });
+    const r = await createUser(admin, { id: "new.dev", displayName: "Personnel 07", role: "PERSONNEL", roleTitle: "Developer", startDate: "2026-09-21", teamId: "APP" });
     expect(r).toEqual({ id: "new.dev", personnelId: "SP07" });
     expect((await listPersonnel(pool(), "2026-09-21")).map((p) => p.id)).toContain("SP07");
     expect((await listPersonnel(pool(), "2026-09-18")).map((p) => p.id)).not.toContain("SP07");
@@ -46,9 +46,8 @@ describe("user management", () => {
 
   it("never leaves the system without an administrator, even under a race", async () => {
     await expect(deactivateUser(admin, "u-admin01", {})).rejects.toMatchObject({ code: "SELF_CHANGE" });
-    await createUser(admin, { id: "admin.two", displayName: "Admin Two", role: "ADMIN" });
-    const two: CurrentUser = { id: "admin.two", displayName: "Admin Two", role: "ADMIN", personnelId: null };
-    const res = await race([() => deactivateUser(admin, "admin.two", {}), () => deactivateUser(two, "u-admin01", {})]);
+    const two: CurrentUser = { id: "u-admin02", displayName: "System Administrator 2 (demo)", role: "ADMIN", personnelId: null };
+    const res = await race([() => deactivateUser(admin, "u-admin02", {}), () => deactivateUser(two, "u-admin01", {})]);
     expect(res.ok).toHaveLength(1);
     expect(res.failed[0]).toMatchObject({ code: "LAST_ADMIN" });
     expect((await pool().query("SELECT count(*)::int AS n FROM app_user WHERE role = 'ADMIN' AND active")).rows[0].n).toBe(1);

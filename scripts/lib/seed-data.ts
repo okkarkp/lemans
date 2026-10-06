@@ -16,6 +16,13 @@ const PERSONNEL = [
 ] as const;
 const SUPERVISOR = "u-sup01";
 const PMO = "u-pmo01";
+const STAFF = [
+  [SUPERVISOR, "IRAS Supervisor (demo)", "SUPERVISOR"], ["u-sup02", "IRAS Supervisor 2 (demo)", "SUPERVISOR"],
+  [PMO, "Accenture PMO (demo)", "PMO"],
+  ["u-admin01", "System Administrator (demo)", "ADMIN"], ["u-admin02", "System Administrator 2 (demo)", "ADMIN"],
+] as const;
+const TEAMS = [["APP", "Application development", SUPERVISOR], ["OPS", "Operations support", "u-sup02"]] as const;
+const TEAM_OF: Record<string, string> = { SP01: "APP", SP02: "APP", SP05: "APP", SP03: "OPS", SP04: "OPS", SP06: "OPS" };
 const user = (pid: string) => `u-${pid.toLowerCase()}`;
 const HOLIDAYS: [string, string][] = [["2026-08-10", "National Day (observed)"]];
 const holidaySet = new Set(HOLIDAYS.map(([d]) => d));
@@ -46,13 +53,18 @@ export const SEED_DEMO_NOW = DEMO_NOW;
 export async function seedDatabase(db: ClientBase): Promise<{ events: number }> {
   try {
     await db.query("BEGIN");
-    await db.query(`TRUNCATE ledger_entry, monthly_report, follow_up, day_correction, leave_request, attendance,
-                    public_holiday, app_user, personnel, app_setting RESTART IDENTITY CASCADE`);
+    // Every application table, so tables added by later migrations are never missed.
+    const tables = (await db.query(
+      "SELECT string_agg(format('%I', tablename), ', ') AS l FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'schema_migrations'",
+    )).rows[0].l;
+    await db.query(`TRUNCATE ${tables} RESTART IDENTITY CASCADE`);
+    for (const [id, name, role] of STAFF) await db.query("INSERT INTO app_user (id, display_name, role) VALUES ($1, $2, $3)", [id, name, role]);
+    for (const [id, name, sup] of TEAMS) await db.query("INSERT INTO team (id, name, supervisor_id) VALUES ($1, $2, $3)", [id, name, sup]);
     for (const [id, name, role] of PERSONNEL) {
-      await db.query("INSERT INTO personnel (id, display_name, role_title, start_date) VALUES ($1, $2, $3, '2026-01-05')", [id, name, role]);
+      await db.query("INSERT INTO personnel (id, display_name, role_title, start_date, team_id) VALUES ($1, $2, $3, '2026-01-05', $4)",
+        [id, name, role, TEAM_OF[id]]);
       await db.query("INSERT INTO app_user (id, display_name, role, personnel_id) VALUES ($1, $2, 'PERSONNEL', $3)", [user(id), name, id]);
     }
-    await db.query("INSERT INTO app_user (id, display_name, role) VALUES ($1, 'IRAS Supervisor (demo)', 'SUPERVISOR'), ($2, 'Accenture PMO (demo)', 'PMO'), ('u-admin01', 'System Administrator (demo)', 'ADMIN')", [SUPERVISOR, PMO]);
     for (const [d, n] of HOLIDAYS) await db.query("INSERT INTO public_holiday (holiday_date, name) VALUES ($1, $2)", [d, n]);
     await db.query("INSERT INTO app_setting (key, value) VALUES ('demo_now', $1)", [DEMO_NOW]);
 

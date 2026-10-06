@@ -9,6 +9,7 @@ import { notFound, rejected } from "../errors";
 import type { CurrentUser } from "../auth/session";
 import { listPersonnel } from "./reference";
 import { loadStatusResolver } from "./status";
+import { approvableTeams } from "./teams";
 
 export const correctionInput = z.object({
   personnelId: z.string().min(1),
@@ -77,10 +78,13 @@ export async function recordCorrection(user: CurrentUser, input: z.infer<typeof 
   });
 }
 
-export async function liveTeamView() {
+/** Today's status per person. A supervisor sees the teams they may approve; the PMO sees everyone. */
+export async function liveTeamView(user: CurrentUser) {
   const db = pool();
   const n = await now(db);
-  const [team, resolver] = await Promise.all([listPersonnel(db, n.date), loadStatusResolver(db, n.date, n.date, n)]);
+  const [all, resolver] = await Promise.all([listPersonnel(db, n.date), loadStatusResolver(db, n.date, n.date, n)]);
+  const scope = user.role === "SUPERVISOR" ? await approvableTeams(db, user, n.date) : null;
+  const team = scope ? all.filter((p) => scope.has(p.teamId)) : all;
   return {
     now: n,
     rows: team.map((p) => ({ ...p, status: resolver.statusOf(p.id, n.date), attendance: resolver.attendanceOf(p.id, n.date) })),
