@@ -27,3 +27,21 @@ export async function runMigrations(client: ClientBase, opts: { reset?: boolean;
     }
   }
 }
+
+/**
+ * Creates (or updates the password of) the application's login role and grants it the
+ * lemans_app_rw privileges from migration 003. Identifiers and the password are quoted by the
+ * server with format(), never concatenated in JavaScript.
+ */
+export async function ensureAppRole(client: ClientBase, user: string, password: string) {
+  if (!/^[a-z_][a-z0-9_]{2,62}$/.test(user)) throw new Error("APP_DB_USER must be a plain lower-case identifier");
+  if (password.length < 16) throw new Error("APP_DB_PASSWORD must be at least 16 characters");
+  const exists = (await client.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [user])).rowCount;
+  const sql = (await client.query<{ s: string }>(
+    exists ? "SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', $1::text, $2::text) AS s"
+           : "SELECT format('CREATE ROLE %I WITH LOGIN PASSWORD %L', $1::text, $2::text) AS s",
+    [user, password])).rows[0].s;
+  await client.query(sql);
+  const grant = (await client.query<{ s: string }>("SELECT format('GRANT lemans_app_rw TO %I', $1::text) AS s", [user])).rows[0].s;
+  await client.query(grant);
+}

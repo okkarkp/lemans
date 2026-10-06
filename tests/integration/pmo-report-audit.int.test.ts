@@ -4,7 +4,7 @@ import { workingDaysBetween } from "@/server/domain/calendar";
 import { correctionInput, pmoDashboard, recordCorrection, recordFollowUp } from "@/server/services/pmo";
 import { acceptReport, getReport, toCsv } from "@/server/services/report";
 import { verifyLedger } from "@/server/services/audit";
-import { reseed } from "../support/test-db";
+import { reseed, testDatabaseUrl, withClient } from "../support/test-db";
 import { ledgerCount, pmo, race, setClock, supervisor } from "../support/fixtures";
 
 const sqlCount = async (sql: string) => (await pool().query(sql)).rows[0].n as number;
@@ -131,14 +131,89 @@ describe("audit ledger and immutability", () => {
     ["DELETE FROM attendance WHERE id = 1"],
     ["UPDATE monthly_report SET billable_days = 999"],
     ["DELETE FROM day_correction"],
-  ])("blocks at the database: %s", async (sql) => {
-    await expect(pool().query(sql)).rejects.toThrow(/not permitted: records are append-only/);
+    ["DELETE FROM leave_request"],
+    ["TRUNCATE ledger_entry"],
+    ["ALTER TABLE ledger_entry DISABLE TRIGGER ledger_entry_immutable"],
+  ])("the application role is refused by privileges: %s", async (sql) => {
+    await expect(pool().query(sql)).rejects.toThrow(/permission denied|must be owner/);
   });
 
-  it("detects tampering by someone who bypasses the database guard", async () => {
-    await pool().query(`ALTER TABLE ledger_entry DISABLE TRIGGER ledger_entry_immutable;
+  it.each([
+    ["UPDATE ledger_entry SET actor_id = 'x' WHERE seq = 1"],
+    ["DELETE FROM attendance WHERE id = 1"],
+    ["UPDATE monthly_report SET billable_days = 999"],
+  ])("even the schema owner is stopped by the append-only triggers: %s", async (sql) => {
+    await expect(withClient(testDatabaseUrl(), (c) => c.query(sql))).rejects.toThrow(/not permitted: records are append-only/);
+  });
+
+  it("detects tampering by an administrator who bypasses the database guard", async () => {
+    // Only the owner can do this - the scenario is a database administrator acting outside the app.
+    await withClient(testDatabaseUrl(), (c) => c.query(`ALTER TABLE ledger_entry DISABLE TRIGGER ledger_entry_immutable;
       UPDATE ledger_entry SET payload = jsonb_set(payload, '{workDate}', '"1999-01-01"') WHERE seq = 10;
-      ALTER TABLE ledger_entry ENABLE TRIGGER ledger_entry_immutable;`);
+      ALTER TABLE ledger_entry ENABLE TRIGGER ledger_entry_immutable;`));
     expect(await verifyLedger()).toMatchObject({ ok: false, brokenAt: 10 });
   });
+
+  const tamper = (where: string) => withClient(testDatabaseUrl(), (c) => c.query(`ALTER TABLE ledger_entry DISABLE TRIGGER ledger_entry_immutable;
+    UPDATE ledger_entry SET actor_id = 'intruder' WHERE ${where};
+    ALTER TABLE ledger_entry ENABLE TRIGGER ledger_entry_immutable;`));
+
+  it("records a checkpoint after a full verification and checks quickly from it", async () => {
+    const full = await verifyLedger({ full: true });
+    expect(full).toMatchObject({ ok: true, full: true });
+    const quick = await verifyLedger();
+    expect(quick).toMatchObject({ ok: true, from: full.count });
+    expect(quick.lastFull).not.toBeNull();
+  });
+
+  it("catches tampering after the checkpoint quickly, and before it only with a full run", async () => {
+    await verifyLedger({ full: true }); // checkpoint at the current head (220)
+    await tamper("seq = 50");
+    expect((await verifyLedger()).ok).toBe(true); // documented limit of the quick check
+    expect(await verifyLedger({ full: true })).toMatchObject({ ok: false, brokenAt: 50 });
+  });
+
+  it("catches a tampered checkpoint entry; an owner who also rewrites checkpoints needs off-database anchoring", async () => {
+    const { count } = await verifyLedger({ full: true });
+    await tamper(`seq = ${count}`);
+    await withClient(testDatabaseUrl(), (c) => c.query(`ALTER TABLE ledger_entry DISABLE TRIGGER ledger_entry_immutable;
+      UPDATE ledger_entry SET hash = repeat('a', 64) WHERE seq = ${count};
+      ALTER TABLE ledger_entry ENABLE TRIGGER ledger_entry_immutable;`));
+    expect(await verifyLedger()).toMatchObject({ ok: false, brokenAt: count });
+
+    await reseed();
+    await verifyLedger({ full: true }); // checkpoint at 220
+    // ledger_checkpoint references ledger_entry, so removing the head means removing its checkpoint too:
+    // a would-be intruder has to hide the newest entry. The older checkpoint still exposes it.
+    await withClient(testDatabaseUrl(), (c) => c.query(`INSERT INTO ledger_checkpoint (seq, hash, full_verify)
+      SELECT seq, hash, true FROM ledger_entry WHERE seq = 219`));
+    await withClient(testDatabaseUrl(), (c) => c.query(`ALTER TABLE ledger_entry DISABLE TRIGGER ledger_entry_immutable;
+      ALTER TABLE ledger_checkpoint DISABLE TRIGGER ledger_checkpoint_immutable;
+      DELETE FROM ledger_checkpoint WHERE seq = 220; DELETE FROM ledger_entry WHERE seq = 220;
+      ALTER TABLE ledger_checkpoint ENABLE TRIGGER ledger_checkpoint_immutable;
+      ALTER TABLE ledger_entry ENABLE TRIGGER ledger_entry_immutable;`));
+    // Known limit: with owner rights over both tables the chain alone cannot tell. The fix is to
+    // publish the head hash outside the database (see docs/ARCHITECTURE.md).
+    expect((await verifyLedger({ full: true })).ok).toBe(true);
+  });
+
+  it("detects removal of the newest entries when a checkpoint points past them", async () => {
+    await verifyLedger({ full: true }); // checkpoint at 220
+    await withClient(testDatabaseUrl(), (c) => c.query(`ALTER TABLE ledger_checkpoint DROP CONSTRAINT ledger_checkpoint_seq_fkey;
+      ALTER TABLE ledger_entry DISABLE TRIGGER ledger_entry_immutable;
+      DELETE FROM ledger_entry WHERE seq >= 218;
+      ALTER TABLE ledger_entry ENABLE TRIGGER ledger_entry_immutable;`));
+    expect(await verifyLedger({ full: true })).toMatchObject({ ok: false, brokenAt: 218 });
+    await reseed();
+    await withClient(testDatabaseUrl(), (c) => c.query(
+      "ALTER TABLE ledger_checkpoint ADD CONSTRAINT ledger_checkpoint_seq_fkey FOREIGN KEY (seq) REFERENCES ledger_entry (seq)"));
+  });
+
+  it("detects a gap in the middle of the chain", async () => {
+    await withClient(testDatabaseUrl(), (c) => c.query(`ALTER TABLE ledger_entry DISABLE TRIGGER ledger_entry_immutable;
+      DELETE FROM ledger_entry WHERE seq = 100;
+      ALTER TABLE ledger_entry ENABLE TRIGGER ledger_entry_immutable;`));
+    expect(await verifyLedger({ full: true })).toMatchObject({ ok: false, brokenAt: 100 });
+  });
 });
+

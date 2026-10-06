@@ -1,7 +1,7 @@
 import { afterAll } from "vitest";
-import { testDatabaseUrl } from "./test-db";
+import { testAppDatabaseUrl } from "./test-db";
 
-process.env.DATABASE_URL = testDatabaseUrl();
+process.env.DATABASE_URL = testAppDatabaseUrl();
 process.env.DEMO_MODE = "true";
 process.env.SESSION_SECRET = "test-only-session-key-not-used-for-anything-real";
 process.env.COVERAGE_FLOOR = "0.8";

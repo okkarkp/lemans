@@ -1,7 +1,7 @@
 import { defineConfig } from "@playwright/test";
-import { testDatabaseUrl } from "./tests/support/test-db";
+import { testAppDatabaseUrl } from "./tests/support/test-db";
 
-const DB = testDatabaseUrl();
+const DB = testAppDatabaseUrl();
 const SECRET = "test-only-session-key-not-used-for-anything-real";
 const common = { DATABASE_URL: DB, SESSION_SECRET: SECRET, COVERAGE_FLOOR: "0.8", ATTENDANCE_FLOOR: "0.85", MISSING_CHECKIN_ALERT_TIME: "12:00", OFFICE_CIDRS: "10.0.0.0/8" };
 

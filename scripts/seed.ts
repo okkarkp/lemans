@@ -2,7 +2,7 @@ import { Client } from "pg";
 import { SEED_DEMO_NOW, seedDatabase } from "./lib/seed-data";
 
 async function main() {
-  const db = new Client({ connectionString: process.env.DATABASE_URL });
+  const db = new Client({ connectionString: process.env.MIGRATION_DATABASE_URL ?? process.env.DATABASE_URL });
   await db.connect();
   try {
     const { events } = await seedDatabase(db);

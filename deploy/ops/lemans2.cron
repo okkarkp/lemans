@@ -1,0 +1,6 @@
+# Installed as /etc/cron.d/lemans2. Times are server time (UTC). Output goes to syslog via the scripts.
+SHELL=/bin/bash
+*/2 * * * * root /home/ubuntu/lemans2/ops/watchdog.sh >/dev/null 2>&1
+30 18 * * * root /home/ubuntu/lemans2/ops/backup.sh >/dev/null 2>&1
+0 19 * * *  root /home/ubuntu/lemans2/ops/verify-ledger.sh >/dev/null 2>&1
+30 19 * * 0 root /home/ubuntu/lemans2/ops/restore-test.sh >/dev/null 2>&1

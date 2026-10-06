@@ -16,8 +16,10 @@ const EVENT_LABEL: Record<string, string> = {
 
 export default async function AuditPage(props: PageProps<"/audit">) {
   await requirePageUser(["SUPERVISOR", "PMO", "ADMIN"]);
-  const page = Number((await props.searchParams).page ?? 1);
-  const [data, check] = await Promise.all([ledgerPage(page), verifyLedger()]);
+  const sp = await props.searchParams;
+  const page = Number(sp.page ?? 1);
+  const full = sp.verify === "full";
+  const [data, check] = await Promise.all([ledgerPage(page), verifyLedger({ full })]);
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize));
   const current = Math.min(Math.max(1, page || 1), pages);
 
@@ -26,8 +28,12 @@ export default async function AuditPage(props: PageProps<"/audit">) {
       <PageHeader title="Audit ledger" subtitle="Every check-in, leave decision, correction and acceptance, in order. Entries cannot be edited or deleted." />
       <div className="mb-6">
         {check.ok
-          ? <Alert tone="ok"><span className="font-semibold">Chain verified.</span> {check.count} entries recomputed from the first; no record has been altered. Head hash <code className="font-mono text-xs">{check.head?.slice(0, 16)}</code></Alert>
-          : <Alert tone="bad"><span className="font-semibold">Chain broken at entry #{check.brokenAt}.</span> A record was altered after it was written. Escalate to the security officer.</Alert>}
+          ? <Alert tone="ok"><span className="font-semibold">Chain verified.</span> {check.full ? `All ${check.count} entries recomputed from the first.` : `${check.count} entries; recomputed from checkpoint #${check.from}.`} No record has been altered. Head hash <code className="font-mono text-xs">{check.head?.slice(0, 16)}</code></Alert>
+          : <Alert tone="bad"><span className="font-semibold">Chain broken at entry #{check.brokenAt}.</span> A record was altered or removed after it was written. Escalate to the security officer.</Alert>}
+        <p className="mt-2 text-xs text-muted">
+          Last full verification: {check.lastFull ? dateTimeSgt(check.lastFull) : "not yet run"}.{" "}
+          {!full && <Link href="/audit?verify=full" className="font-semibold text-brand-dark underline">Run a full verification now</Link>}
+        </p>
       </div>
       <Card title={`Entries (${data.total})`}>
         <div className="overflow-x-auto">
