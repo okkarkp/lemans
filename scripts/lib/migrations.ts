@@ -2,7 +2,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { ClientBase } from "pg";
 
-const dir = path.join(__dirname, "..", "..", "db", "migrations");
+// MIGRATIONS_DIR is set in the container image, where these scripts are bundled elsewhere.
+const dir = process.env.MIGRATIONS_DIR ?? path.join(__dirname, "..", "..", "db", "migrations");
 
 /** Applies pending SQL migrations in name order, each in its own transaction. */
 export async function runMigrations(client: ClientBase, opts: { reset?: boolean; log?: (m: string) => void } = {}) {

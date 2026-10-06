@@ -1,0 +1,25 @@
+#!/bin/sh
+# Operations inside the container:  docker exec <container> lemans <command>
+set -eu
+SECRETS=/data/secrets
+owner_url() { echo "postgres://lemans:$(cat $SECRETS/owner_password)@127.0.0.1:5432/${1:-lemans}"; }
+app_url() { echo "postgres://lemans_app:$(cat $SECRETS/app_password)@127.0.0.1:5432/lemans"; }
+export MIGRATIONS_DIR=/app/db/migrations
+
+case "${1:-}" in
+  migrate)  MIGRATION_DATABASE_URL=$(owner_url) APP_DB_USER=lemans_app APP_DB_PASSWORD=$(cat $SECRETS/app_password) su-exec app node /app/ops/migrate.js ;;
+  seed)     [ "${2:-}" = "--yes" ] || { echo "This replaces ALL data with demo data. Run: lemans seed --yes" >&2; exit 2; }
+            MIGRATION_DATABASE_URL=$(owner_url) su-exec app node /app/ops/seed.js ;;
+  verify-ledger) APP_DATABASE_URL=$(app_url) su-exec app node /app/ops/verify-ledger.js ;;
+  backup)   su-exec postgres pg_dump -Fc -d lemans ;;  # writes the dump to stdout
+  restore-test)
+            # Reads a dump on stdin, restores it into a scratch database, verifies the ledger, drops it.
+            su-exec postgres psql -q -c "DROP DATABASE IF EXISTS lemans_restore_test" -c "CREATE DATABASE lemans_restore_test OWNER lemans"
+            trap 'su-exec postgres psql -q -c "DROP DATABASE IF EXISTS lemans_restore_test"' EXIT
+            su-exec postgres pg_restore -d lemans_restore_test --exit-on-error --no-owner --role=lemans
+            echo "restored ledger entries: $(su-exec postgres psql -tAq -d lemans_restore_test -c 'SELECT count(*) FROM ledger_entry')"
+            APP_DATABASE_URL=$(owner_url lemans_restore_test) su-exec app node /app/ops/verify-ledger.js ;;
+  run-jobs) wget -qO- --header="x-jobs-token: ${JOBS_TOKEN:-$(cat $SECRETS/jobs_token)}" --post-data="" http://127.0.0.1:3100/api/internal/jobs; echo ;;
+  psql)     shift; exec su-exec postgres psql -d lemans "$@" ;;
+  *) echo "usage: lemans migrate | seed --yes | verify-ledger | backup > file | restore-test < file | run-jobs | psql" >&2; exit 2 ;;
+esac

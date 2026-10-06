@@ -76,10 +76,37 @@ grants access and a role (service personnel, IRAS supervisor, Accenture PMO, adm
 | An administrator cannot change or deactivate their own account; one active administrator always remains | Prevents lock-out, including when two administrators act at once |
 | Changes are written to the ledger by identifier, without names | Names are personal data and can change; the ledger is permanent |
 
+## Deployment: one container
+
+`tini` starts the entrypoint, which runs PostgreSQL (listening on 127.0.0.1 inside the container
+only) as `postgres` and the app as `app`. On first start it initialises the database and generates
+the owner, application, session and job secrets into `/data/secrets` (root-only); every start
+applies migrations before the app takes traffic. If either process dies, the other is stopped
+cleanly and the container exits for Docker to restart. The app connects as the restricted
+`lemans_app` role. Trade-off: the app cannot be scaled separately from its database; splitting
+them again (or moving to a managed database) needs only a different `DATABASE_URL`.
+
+Tested: restart keeps data and secrets; `docker stop` shuts PostgreSQL down cleanly (exit 0);
+killing Node or PostgreSQL with SIGKILL recovers without data loss and the ledger still verifies;
+an existing installation's dump imports and is migrated forward on first start.
+
+## Teams, delegation and notifications
+
+Teams decide who approves leave; SLA coverage stays contract-wide. A supervisor sees and decides
+only their teams' requests, unsupervised teams, and teams delegated to them for the day. Every
+event that needs attention writes an in-app notification - and, for people with an address, an
+email to the outbox - in the same transaction as the event. Scheduled jobs (11:00 reminder,
+alert-time missing check-in, approval reminders, month-end notice) run at most once per key.
+Messages never name the leave type, because "medical" is health data and may leave by email.
+
 ## Security controls in this build
 
-- Signed (HS256), HttpOnly, SameSite=Lax session cookie with an 8-hour expiry; user and role
-  reloaded from the database on every request.
+- Server-side sessions referenced by a signed (HS256), HttpOnly, SameSite=Lax cookie: 30-minute
+  sliding idle timeout, 8-hour limit; ended at once by sign-out, deactivation or an administrator.
+  User and role reloaded from the database on every request.
+- Administrator rights need a second administrator (enforced in the app and by a database check).
+- Supporting documents are type-checked by content, size-limited, immutable, served as downloads
+  in a sandbox, and visible only to the requester and approvers.
 - Role check on every page and every API route, on the server.
 - Same-origin check on every state-changing API call.
 - Input validation with Zod at every API boundary; dates validated as real calendar dates.

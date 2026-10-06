@@ -23,6 +23,31 @@ npm run dev          # http://localhost:3100
 
 `npm run db:reset` drops and reseeds everything (demo mode only).
 
+## Run as a single container
+
+The image contains the app and its PostgreSQL database. All state - database files and the secrets
+generated on first start - lives in the volume mounted at `/data`.
+
+```bash
+docker build -t lemans2 .
+docker run -d --name lemans2 -p 127.0.0.1:3100:3100 -v lemans2-data:/data -e DEMO_MODE=true -e SEED_DEMO_DATA=true lemans2
+```
+
+Operations run inside it with `docker exec lemans2 lemans <command>`:
+
+| Command | What it does |
+| --- | --- |
+| `migrate` | Applies pending migrations (also runs on every start) |
+| `seed --yes` | Replaces all data with the demo scenario |
+| `verify-ledger` | Full verification of the audit ledger |
+| `backup > file.dump` | Logical backup to stdout |
+| `restore-test < file.dump` | Restores a backup into a scratch database and verifies it |
+| `run-jobs` | Runs due reminders and alerts, sends queued email |
+| `psql` | Database console |
+
+To move an existing installation in, place its `pg_dump -Fc` output at `/data/import.dump` before
+the first start. Deployment files for a host with nginx and cron are in `deploy/`.
+
 ## Demo script
 
 | Step | Sign in as | What to show |
@@ -33,7 +58,10 @@ npm run dev          # http://localhost:3100
 | 4 | Accenture PMO | The 12:00 alert lists who has not checked in. Follow up. Close the 15 Sep gap with a reasoned correction. |
 | 5 | IRAS Supervisor | Monthly report: August is accepted and frozen; September is a draft. Set the date to 1 Oct, resolve gaps, accept. Export CSV. |
 | 6 | Either | Audit ledger: every action above, chain verified. |
-| 7 | System Administrator | Users: add a service personnel with a start date, edit, deactivate with a last day (access ends at once), reactivate. |
+| 7 | System Administrator | Users: add a service personnel with a team and start date, set entitlements, deactivate with a last day (access ends at once), sign someone out everywhere, import from CSV, maintain public holidays. |
+| 8 | System Administrator 2 | Approve the administrator rights requested by the first administrator (four eyes). |
+| 9 | Personnel 01 | Half-day leave, medical leave with certificate upload, withdraw a request; the bell shows notifications. |
+| 10 | Accenture PMO | Excel and printable PDF of the report; record the invoice for an accepted month; download the ledger digest. |
 
 ## Quality gates
 

@@ -9,6 +9,9 @@ import { LiveTeam } from "../live-team";
 
 export const metadata: Metadata = { title: "Exceptions" };
 
+// Keeps the page light when many days are open; the oldest gaps come first.
+const GAP_LIST_LIMIT = 50;
+
 export default async function PmoPage() {
   const user = await requirePageUser(["PMO"]);
   const [d, live] = await Promise.all([pmoDashboard(), liveTeamView(user)]);
@@ -43,13 +46,14 @@ export default async function PmoPage() {
         <Card title={`Unexplained gaps this month (${d.gaps.length})`}>
           {d.gaps.length === 0 ? <Empty>No gaps. Every past working day is worked or accounted for.</Empty> : (
             <ul className="divide-y divide-line">
-              {d.gaps.map((g) => (
+              {d.gaps.slice(0, GAP_LIST_LIMIT).map((g) => (
                 <li key={`${g.personnel.id}-${g.date}`} className="py-3 first:pt-0">
                   <GapCorrection personnelId={g.personnel.id} personnelName={g.personnel.name} workDate={g.date} />
                 </li>
               ))}
             </ul>
           )}
+          {d.gaps.length > GAP_LIST_LIMIT && <p className="mt-3 text-sm text-muted">Showing the oldest {GAP_LIST_LIMIT} of {d.gaps.length}. Resolve these to see the rest.</p>}
           <p className="mt-4 text-xs text-muted">A correction needs a reason. It is written to the audit ledger and shown on the monthly report for IRAS to see.</p>
         </Card>
         <Card title="Who is working today"><LiveTeam rows={live.rows} /></Card>
