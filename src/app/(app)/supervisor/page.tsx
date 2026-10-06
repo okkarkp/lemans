@@ -4,6 +4,7 @@ import { requirePageUser } from "@/server/auth/session";
 import { listPending } from "@/server/services/leave";
 import { liveTeamView } from "@/server/services/pmo";
 import { listDelegations } from "@/server/services/teams";
+import { listAttachments } from "@/server/services/attachments";
 import { Card, Empty, PageHeader } from "@/components/ui";
 import { longDate } from "@/lib/format";
 import { LeaveDecision } from "./leave-decision";
@@ -18,13 +19,14 @@ export default async function SupervisorPage() {
     listPending(user), liveTeamView(user), listDelegations(user),
     pool().query("SELECT id, display_name FROM app_user WHERE role = 'SUPERVISOR' AND active ORDER BY display_name"),
   ]);
+  const docs = Object.fromEntries(await Promise.all(pending.map(async (r) => [r.id, r.attachments ? await listAttachments(user, r.id) : []] as const)));
   return (
     <>
       <PageHeader title="Approvals and live view" subtitle={longDate(live.now.date)} />
       <div className="grid gap-6 lg:grid-cols-2">
         <Card title={`Leave awaiting your approval (${pending.length})`}>
           {pending.length === 0 ? <Empty>Nothing waiting for approval.</Empty> : (
-            <ul className="divide-y divide-line">{pending.map((r) => <li key={r.id} className="py-4 first:pt-0 last:pb-0"><LeaveDecision request={r} /></li>)}</ul>
+            <ul className="divide-y divide-line">{pending.map((r) => <li key={r.id} className="py-4 first:pt-0 last:pb-0"><LeaveDecision request={r} documents={docs[r.id] ?? []} /></li>)}</ul>
           )}
         </Card>
         <Card title="Who is working today"><LiveTeam rows={live.rows} /></Card>

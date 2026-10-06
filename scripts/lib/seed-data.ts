@@ -77,8 +77,9 @@ export async function seedDatabase(db: ClientBase): Promise<{ events: number }> 
       let id = 0;
       events.push({ when: submitted, run: async () => {
         const r = await db.query(
-          `INSERT INTO leave_request (personnel_id, leave_type, start_date, end_date, backup_personnel_id, submitted_at)
-           VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`, [l.pid, l.type, l.from, l.to, l.backup, submitted]);
+          `INSERT INTO leave_request (personnel_id, leave_type, start_date, end_date, backup_personnel_id, submitted_at, days)
+           VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+          [l.pid, l.type, l.from, l.to, l.backup, submitted, workingDaysBetween(l.from, l.to, holidaySet).length]);
         id = Number(r.rows[0].id);
         await appendLedger(db, { actorId: user(l.pid), eventType: "LEAVE_REQUESTED", occurredAt: submitted,
           payload: { requestId: id, personnelId: l.pid, leaveType: l.type, startDate: l.from, endDate: l.to, backupPersonnelId: l.backup } });

@@ -30,7 +30,7 @@ export async function checkIn(user: CurrentUser, declared: Location, signals: Tr
       "SELECT 1 FROM personnel WHERE id = $1 AND start_date <= $2 AND (end_date IS NULL OR end_date >= $2)", [personnelId, n.date]);
     if (!period.rowCount) throw rejected("NOT_ASSIGNED", "You are not assigned to the contract today.");
     const leave = await tx.query(
-      "SELECT 1 FROM leave_request WHERE personnel_id = $1 AND status = 'APPROVED' AND $2 BETWEEN start_date AND end_date",
+      "SELECT 1 FROM leave_request WHERE personnel_id = $1 AND status = 'APPROVED' AND half_day IS NULL AND $2 BETWEEN start_date AND end_date",
       [personnelId, n.date]);
     if (leave.rowCount) throw rejected("ON_LEAVE", "You are on approved leave today.");
     const existing = await tx.query("SELECT 1 FROM attendance WHERE personnel_id = $1 AND work_date = $2", [personnelId, n.date]);

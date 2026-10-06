@@ -22,7 +22,7 @@ export async function loadStatusResolver(db: Db, from: IsoDate, to: IsoDate, n: 
     `SELECT personnel_id, work_date, location, evidence_strength, evidence_device, evidence_network, checked_in_at
      FROM attendance WHERE work_date BETWEEN $1 AND $2`, [from, to]);
   const leave = await db.query(
-    `SELECT personnel_id, start_date, end_date FROM leave_request
+    `SELECT personnel_id, start_date, end_date, half_day FROM leave_request
      WHERE status = 'APPROVED' AND start_date <= $2 AND end_date >= $1`, [from, to]);
   const corr = await db.query(`SELECT personnel_id, work_date, outcome FROM day_correction WHERE work_date BETWEEN $1 AND $2`, [from, to]);
   const key = (p: string, d: IsoDate) => `${p}|${d}`;
@@ -31,7 +31,9 @@ export async function loadStatusResolver(db: Db, from: IsoDate, to: IsoDate, n: 
     checkedInAt: (r.checked_in_at as Date).toISOString(),
   }]));
   const corrections = new Map<string, "LEAVE" | "WORKED">(corr.rows.map((r) => [key(r.personnel_id, r.work_date), r.outcome]));
-  const onLeave = (p: string, d: IsoDate) => leave.rows.some((l) => l.personnel_id === p && l.start_date <= d && d <= l.end_date);
+  const covers = (p: string, d: IsoDate, half: boolean) =>
+    leave.rows.some((l) => l.personnel_id === p && l.start_date <= d && d <= l.end_date && (l.half_day !== null) === half);
+  const onLeave = (p: string, d: IsoDate) => covers(p, d, false);
   const ctxAlert = alertPassed(n);
 
   return {
@@ -40,7 +42,7 @@ export async function loadStatusResolver(db: Db, from: IsoDate, to: IsoDate, n: 
     correctionOf: (p: string, d: IsoDate) => corrections.get(key(p, d)) ?? null,
     statusOf: (p: string, d: IsoDate): DayStatus => resolveDayStatus(
       d,
-      { attended: attendance.has(key(p, d)), onApprovedLeave: onLeave(p, d), correction: corrections.get(key(p, d)) ?? null },
+      { attended: attendance.has(key(p, d)), onApprovedLeave: onLeave(p, d), halfDayLeave: covers(p, d, true), correction: corrections.get(key(p, d)) ?? null },
       {
         today: n.date, alertPassed: ctxAlert, workingDay: isWorkingDay(d, holidays),
         assigned: periods.has(p) && isAssigned(periods.get(p)!, d),

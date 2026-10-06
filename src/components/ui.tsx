@@ -45,6 +45,9 @@ const STATUS: Record<string, { label: string; tone: Tone }> = {
   PENDING: { label: "Pending", tone: "warn" },
   APPROVED: { label: "Approved", tone: "ok" },
   REJECTED: { label: "Rejected", tone: "bad" },
+  WITHDRAWN: { label: "Withdrawn", tone: "neutral" },
+  CANCELLED: { label: "Cancelled", tone: "neutral" },
+  WORKED_HALF: { label: "Half day worked", tone: "ok" },
 };
 export function StatusBadge({ status }: { status: string }) {
   const s = STATUS[status] ?? { label: status, tone: "neutral" as Tone };

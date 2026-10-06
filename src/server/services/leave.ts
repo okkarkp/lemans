@@ -8,6 +8,8 @@ import { addDays, isIsoDate, workingDaysBetween, type IsoDate } from "../domain/
 import { computeCoverage, type CoverageResult } from "../domain/coverage";
 import { badRequest, conflict, forbidden, notFound, rejected } from "../errors";
 import type { CurrentUser } from "../auth/session";
+import { isBalanced } from "../domain/leave-balance";
+import { balanceFor } from "./entitlements";
 import { holidaySet, isAssigned, listPersonnel } from "./reference";
 import { approvableTeams } from "./teams";
 
@@ -20,7 +22,9 @@ export const leaveInput = z.object({
   startDate: isoDate,
   endDate: isoDate,
   backupPersonnelId: z.string().min(1, "Choose a backup."),
-}).refine((v) => v.endDate >= v.startDate, "End date must be on or after the start date.");
+  halfDay: z.enum(["AM", "PM"]).optional(),
+}).refine((v) => v.endDate >= v.startDate, "End date must be on or after the start date.")
+  .refine((v) => !v.halfDay || v.startDate === v.endDate, "A half day must be a single day.");
 
 export const decisionInput = z.object({
   decision: z.enum(["APPROVE", "REJECT"]),
@@ -57,6 +61,7 @@ export async function submitLeave(user: CurrentUser, input: z.infer<typeof leave
     const n = await now(tx);
     if (input.startDate < n.date) throw rejected("BACKDATED", "Leave cannot start in the past. Ask the PMO to record a correction instead.");
     if (input.endDate > addDays(input.startDate, MAX_SPAN_DAYS - 1)) throw rejected("TOO_LONG", `A single request can cover at most ${MAX_SPAN_DAYS} days.`);
+    if (input.startDate.slice(0, 4) !== input.endDate.slice(0, 4)) throw rejected("SPANS_YEARS", "Split leave at the year end: entitlements are per calendar year.");
 
     // Serialise leave submissions so two concurrent requests cannot both pass the coverage check.
     await tx.query("SELECT pg_advisory_xact_lock(72026002)");
@@ -79,16 +84,21 @@ export async function submitLeave(user: CurrentUser, input: z.infer<typeof leave
 
     const cov = await coverageFor(tx, personnelId, input.startDate, input.endDate);
     if (cov.workingDays === 0) throw rejected("NO_WORKING_DAYS", "The period has no working days.");
+    const days = input.halfDay ? 0.5 : cov.workingDays;
+    if (isBalanced(input.leaveType)) {
+      const bal = await balanceFor(tx, personnelId, Number(input.startDate.slice(0, 4)), input.leaveType);
+      if (days > bal.remaining) throw rejected("INSUFFICIENT_BALANCE", `This needs ${days} day(s) but only ${bal.remaining} remain for ${LEAVE_TYPES[input.leaveType].toLowerCase()} this year.`);
+    }
     if (!cov.passes) throw rejected("SLA_COVERAGE", `Coverage would fall to ${pct(cov.minRatio)} on ${cov.worstDay}, below the ${pct(cov.floor)} floor.`);
 
     const ins = await tx.query<{ id: string }>(
-      `INSERT INTO leave_request (personnel_id, leave_type, start_date, end_date, backup_personnel_id, submitted_at)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-      [personnelId, input.leaveType, input.startDate, input.endDate, input.backupPersonnelId, n.instant]);
+      `INSERT INTO leave_request (personnel_id, leave_type, start_date, end_date, backup_personnel_id, submitted_at, half_day, days)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+      [personnelId, input.leaveType, input.startDate, input.endDate, input.backupPersonnelId, n.instant, input.halfDay ?? null, days]);
     const id = Number(ins.rows[0].id);
     await appendLedger(tx, {
       actorId: user.id, eventType: "LEAVE_REQUESTED", occurredAt: n.instant,
-      payload: { requestId: id, personnelId, ...input, coverage: round(cov.minRatio) },
+      payload: { requestId: id, personnelId, ...input, days, coverage: round(cov.minRatio) },
     });
     return { id };
   });
@@ -107,6 +117,10 @@ export async function decideLeave(user: CurrentUser, requestId: number, input: z
     if (req.status !== "PENDING") throw conflict("ALREADY_DECIDED", `This request is already ${req.status.toLowerCase()}.`);
 
     if (input.decision === "APPROVE") {
+      if (req.leave_type === "MEDICAL") {
+        const mc = await tx.query("SELECT 1 FROM leave_attachment WHERE leave_request_id = $1", [requestId]);
+        if (!mc.rowCount) throw rejected("MC_REQUIRED", "Medical leave needs a medical certificate before it can be approved.");
+      }
       const cov = await coverageFor(tx, req.personnel_id, req.start_date, req.end_date, requestId);
       if (!cov.passes) throw rejected("SLA_COVERAGE", `Approving would drop coverage to ${pct(cov.minRatio)} on ${cov.worstDay}.`);
     }
@@ -122,13 +136,39 @@ export async function decideLeave(user: CurrentUser, requestId: number, input: z
   });
 }
 
+/** The requester takes back a request that has not been decided yet. */
+export async function withdrawLeave(user: CurrentUser, requestId: number) {
+  return changeOwnLeave(user, requestId, "PENDING", "WITHDRAWN", "LEAVE_WITHDRAWN");
+}
+
+/** The requester cancels approved leave that has not started; the days return to the balance. */
+export async function cancelLeave(user: CurrentUser, requestId: number) {
+  return changeOwnLeave(user, requestId, "APPROVED", "CANCELLED", "LEAVE_CANCELLED");
+}
+
+async function changeOwnLeave(user: CurrentUser, requestId: number, from: string, to: string, event: "LEAVE_WITHDRAWN" | "LEAVE_CANCELLED") {
+  return withTx(async (tx) => {
+    const n = await now(tx);
+    const req = (await tx.query("SELECT * FROM leave_request WHERE id = $1 FOR UPDATE", [requestId])).rows[0];
+    // Someone else's request is reported as not found, so ids cannot be probed.
+    if (!req || req.personnel_id !== user.personnelId) throw notFound("Leave request");
+    if (req.status !== from) throw conflict("WRONG_STATUS", `Only ${from.toLowerCase()} requests can be ${to.toLowerCase()}. This one is ${req.status.toLowerCase()}.`);
+    if (to === "CANCELLED" && req.start_date <= n.date) throw rejected("ALREADY_STARTED", "Leave that has started cannot be cancelled. Ask the PMO to record a correction.");
+    await tx.query("UPDATE leave_request SET status = $2, cancelled_at = $3 WHERE id = $1", [requestId, to, n.instant]);
+    await appendLedger(tx, { actorId: user.id, eventType: event, occurredAt: n.instant, payload: { requestId, personnelId: req.personnel_id } });
+    return { status: to };
+  });
+}
+
 export interface LeaveView {
-  id: number; personnelId: string; personnelName: string; leaveType: string; startDate: IsoDate; endDate: IsoDate;
+  id: number; personnelId: string; personnelName: string; leaveType: string; leaveTypeCode: string; startDate: IsoDate; endDate: IsoDate;
   backupName: string; status: string; submittedAt: string; decisionNote: string | null; teamName: string;
+  halfDay: "AM" | "PM" | null; days: number; attachments: number;
 }
 const LEAVE_SELECT = `
   SELECT l.id, l.personnel_id, p.display_name AS personnel_name, l.leave_type, l.start_date, l.end_date,
-         b.display_name AS backup_name, l.status, l.submitted_at, l.decision_note, t.name AS team_name
+         b.display_name AS backup_name, l.status, l.submitted_at, l.decision_note, t.name AS team_name, l.half_day, l.days,
+         (SELECT count(*)::int FROM leave_attachment a WHERE a.leave_request_id = l.id) AS attachments
   FROM leave_request l JOIN personnel p ON p.id = l.personnel_id JOIN personnel b ON b.id = l.backup_personnel_id
   JOIN team t ON t.id = p.team_id`;
 const mapLeave = (r: Record<string, unknown>): LeaveView => ({
@@ -136,6 +176,7 @@ const mapLeave = (r: Record<string, unknown>): LeaveView => ({
   leaveType: LEAVE_TYPES[r.leave_type as keyof typeof LEAVE_TYPES], startDate: r.start_date as string, endDate: r.end_date as string,
   backupName: r.backup_name as string, status: r.status as string, submittedAt: (r.submitted_at as Date).toISOString(),
   decisionNote: (r.decision_note as string | null) ?? null, teamName: r.team_name as string,
+  leaveTypeCode: r.leave_type as string, halfDay: (r.half_day as "AM" | "PM" | null) ?? null, days: Number(r.days), attachments: Number(r.attachments),
 });
 
 /** Pending requests this supervisor may decide today (own teams and delegated ones). */

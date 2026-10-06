@@ -1,5 +1,5 @@
 import type { IsoDate, IsoMonth } from "./calendar";
-import { isBillable, isLeave, type DayStatus } from "./day-status";
+import { billableWeight, leaveWeight, type DayStatus } from "./day-status";
 
 export interface ReportRow {
   personnelId: string;
@@ -35,12 +35,12 @@ export function buildMonthlyReport(
 ): MonthlyReport {
   const rows = personnel.map((p) => {
     const statuses = days.map((d) => statusOf(p.id, d)).filter((s) => s !== "NOT_ASSIGNED");
-    const count = (pred: (s: DayStatus) => boolean) => statuses.filter(pred).length;
-    const worked = count((s) => s === "WORKED");
-    const correctedWorked = count((s) => s === "CORRECTED_WORKED");
+    const sum = (w: (s: DayStatus) => number) => statuses.reduce((a, s) => a + w(s), 0);
+    const worked = sum((s) => (s === "WORKED" ? 1 : s === "WORKED_HALF" ? 0.5 : 0));
+    const correctedWorked = statuses.filter((s) => s === "CORRECTED_WORKED").length;
     return {
       personnelId: p.id, name: p.name, worked, correctedWorked,
-      leave: count(isLeave), gaps: count((s) => s === "GAP"), billable: count(isBillable), assignedDays: statuses.length,
+      leave: sum(leaveWeight), gaps: statuses.filter((s) => s === "GAP").length, billable: sum(billableWeight), assignedDays: statuses.length,
     };
   }).filter((r) => r.assignedDays > 0);
   const billable = rows.reduce((a, r) => a + r.billable, 0);

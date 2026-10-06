@@ -3,9 +3,11 @@ import { pool } from "@/server/db";
 import { requirePageUser } from "@/server/auth/session";
 import { myDay, myMonth } from "@/server/services/attendance";
 import { listMine, LEAVE_TYPES } from "@/server/services/leave";
+import { balances } from "@/server/services/entitlements";
 import { listPersonnel } from "@/server/services/reference";
-import { Card, Empty, PageHeader, StatusBadge } from "@/components/ui";
-import { longDate, shortDate } from "@/lib/format";
+import { Card, PageHeader } from "@/components/ui";
+import { longDate } from "@/lib/format";
+import { MyRequests } from "./my-requests";
 import { CheckInPanel } from "./check-in-panel";
 import { LeaveForm } from "./leave-form";
 
@@ -16,6 +18,7 @@ export default async function MyDayPage() {
   const personnelId = user.personnelId!;
   const [day, month, mine] = await Promise.all([myDay(personnelId), myMonth(personnelId), listMine(personnelId)]);
   const team = await listPersonnel(pool(), day.now.date);
+  const bal = await balances(personnelId, Number(day.now.date.slice(0, 4)));
   const count = (pred: (s: string) => boolean) => month.filter((d) => pred(d.status)).length;
 
   return (
@@ -26,7 +29,8 @@ export default async function MyDayPage() {
           <CheckInPanel status={day.status} attendance={day.attendance} />
         </Card>
         <Card title="Apply for leave">
-          <LeaveForm today={day.now.date} backups={team.filter((p) => p.id !== personnelId).map((p) => ({ id: p.id, name: p.name }))} types={LEAVE_TYPES} />
+          <LeaveForm today={day.now.date} backups={team.filter((p) => p.id !== personnelId).map((p) => ({ id: p.id, name: p.name }))} types={LEAVE_TYPES}
+            remaining={Object.fromEntries(bal.map((b) => [b.leaveType, b.remaining]))} />
         </Card>
         <div className="space-y-6">
           <Card title="This month so far">
@@ -44,17 +48,23 @@ export default async function MyDayPage() {
               ))}
             </ol>
           </Card>
-          <Card title="My leave requests">
-            {mine.length === 0 ? <Empty>No leave requests yet.</Empty> : (
-              <ul className="divide-y divide-line">
-                {mine.map((r) => (
-                  <li key={r.id} className="flex items-center justify-between gap-3 py-2.5 text-sm">
-                    <span><span className="font-medium">{r.leaveType}</span><br /><span className="text-muted">{shortDate(r.startDate)} - {shortDate(r.endDate)}</span></span>
-                    <StatusBadge status={r.status} />
-                  </li>
+          <Card title={`Leave balance ${day.now.date.slice(0, 4)}`}>
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-xs uppercase tracking-wide text-muted">
+                {["Type", "Entitled", "Taken", "Pending", "Left"].map((h) => <th key={h} scope="col" className="py-1 font-semibold">{h}</th>)}
+              </tr></thead>
+              <tbody className="divide-y divide-line">
+                {bal.map((b) => (
+                  <tr key={b.leaveType}>
+                    <td className="py-1.5">{LEAVE_TYPES[b.leaveType]}</td><td>{b.entitled}</td><td>{b.approved}</td><td>{b.pending}</td>
+                    <td className="font-bold text-brand-deep">{b.remaining}</td>
+                  </tr>
                 ))}
-              </ul>
-            )}
+              </tbody>
+            </table>
+          </Card>
+          <Card title="My leave requests">
+            <MyRequests requests={mine} today={day.now.date} />
           </Card>
         </div>
       </div>

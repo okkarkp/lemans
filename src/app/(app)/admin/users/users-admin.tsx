@@ -4,6 +4,7 @@ import { useMemo, useState, useTransition } from "react";
 import { api } from "@/lib/api";
 import { longDate } from "@/lib/format";
 import { Alert, Badge, buttonClass, Card, Empty, fieldClass, labelClass } from "@/components/ui";
+import { EntitlementsEditor } from "./entitlements-editor";
 
 type Role = "PERSONNEL" | "SUPERVISOR" | "PMO" | "ADMIN";
 interface User {
@@ -165,6 +166,7 @@ function UserRow({ user: u, self, today, teams, onDone }: { user: User; self: bo
             <button type="submit" className={buttonClass.small} disabled={pending}>{pending ? "Saving..." : "Save changes"}</button>
             <button type="button" className={buttonClass.smallSecondary} onClick={() => { setMode("view"); setError(null); }}>Cancel</button>
           </div>
+          {u.personnelId && <EntitlementsEditor userId={u.id} year={Number(today.slice(0, 4))} idBase={idBase} />}
         </form>
       )}
 
