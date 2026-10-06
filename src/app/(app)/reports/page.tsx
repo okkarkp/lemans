@@ -9,6 +9,7 @@ import { getReport } from "@/server/services/report";
 import { Alert, Badge, Card, PageHeader } from "@/components/ui";
 import { dateTimeSgt, longDate, pct } from "@/lib/format";
 import { AcceptReport } from "./accept-report";
+import { InvoiceForm } from "./invoice-form";
 
 export const metadata: Metadata = { title: "Monthly report" };
 
@@ -34,7 +35,13 @@ export default async function ReportPage(props: PageProps<"/reports">) {
         ))}
       </nav>
       <Card title={`${formatMonth(month)} - ${v.acceptance ? "accepted" : v.complete ? "final draft" : "month-to-date draft"}`}
-        action={<a href={`/api/reports/${month}/csv`} className="text-sm font-semibold text-brand-dark underline-offset-2 hover:underline">Export CSV</a>}>
+        action={
+          <span className="flex gap-4 text-sm font-semibold text-brand-dark">
+            <a href={`/api/reports/${month}/xlsx`} className="underline-offset-2 hover:underline">Excel</a>
+            <a href={`/api/reports/${month}/csv`} className="underline-offset-2 hover:underline">Export CSV</a>
+            <a href={`/print/reports/${month}`} className="underline-offset-2 hover:underline">Print / PDF</a>
+          </span>
+        }>
         <p className="mb-4 text-sm text-muted">
           {r.workingDays} working days{r.periodEnd ? ` up to ${longDate(r.periodEnd)}` : ""}. Billed on actual working days only; leave days are excluded.
         </p>
@@ -73,9 +80,12 @@ export default async function ReportPage(props: PageProps<"/reports">) {
           <div>
             {v.acceptance ? (
               <Alert tone="ok">
-                <span className="font-semibold">Accepted by {v.acceptance.acceptedBy}</span> on {dateTimeSgt(v.acceptance.acceptedAt)}. Ledger entry #{v.acceptance.ledgerSeq}. The invoice may now be raised.
+                <span className="font-semibold">Accepted by {v.acceptance.acceptedBy}</span> on {dateTimeSgt(v.acceptance.acceptedAt)}. Ledger entry #{v.acceptance.ledgerSeq}.{" "}
+                {v.invoice ? <>Invoice <span className="font-semibold">{v.invoice.invoiceRef}</span> raised by {v.invoice.raisedBy} on {dateTimeSgt(v.invoice.raisedAt)}.</> : "The invoice may now be raised."}
               </Alert>
-            ) : user.role === "SUPERVISOR" ? (
+            ) : null}
+            {v.acceptance && !v.invoice && user.role === "PMO" && <InvoiceForm month={month} />}
+            {v.acceptance ? null : user.role === "SUPERVISOR" ? (
               <AcceptReport month={month} canAccept={v.complete && r.gaps === 0}
                 reason={!v.complete ? "Acceptance opens once the month is over." : r.gaps ? `${r.gaps} unexplained day(s) must be resolved by the PMO first.` : null} />
             ) : (

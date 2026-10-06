@@ -1,4 +1,5 @@
 import "server-only";
+import { z } from "zod";
 import { pool, withTx, type Db } from "../db";
 import { now, type Now } from "../clock";
 import { appendLedger } from "../ledger";
@@ -12,10 +13,12 @@ import { formatMonth } from "../domain/calendar";
 import { loadStatusResolver } from "./status";
 
 export interface Acceptance { acceptedBy: string; acceptedAt: string; ledgerSeq: number }
+export interface Invoice { invoiceRef: string; raisedBy: string; raisedAt: string; ledgerSeq: number }
 export interface ReportView {
   report: MonthlyReport;
   complete: boolean;
   acceptance: Acceptance | null;
+  invoice: Invoice | null;
   corrections: { personnelName: string; workDate: string; outcome: string; reason: string }[];
 }
 
@@ -33,6 +36,9 @@ async function compute(db: Db, month: IsoMonth, n: Now): Promise<{ report: Month
 
 export async function getReport(month: IsoMonth): Promise<ReportView> {
   const db = pool();
+  const inv = (await db.query(
+    "SELECT i.invoice_ref, u.display_name, i.raised_at, i.ledger_seq FROM invoice_record i JOIN app_user u ON u.id = i.raised_by WHERE i.report_month = $1", [month])).rows[0];
+  const invoice = inv ? { invoiceRef: inv.invoice_ref, raisedBy: inv.display_name, raisedAt: (inv.raised_at as Date).toISOString(), ledgerSeq: Number(inv.ledger_seq) } : null;
   const [acc, corr] = await Promise.all([
     db.query(
       `SELECT m.snapshot, m.accepted_at, m.ledger_seq, u.display_name FROM monthly_report m
@@ -46,11 +52,11 @@ export async function getReport(month: IsoMonth): Promise<ReportView> {
   // Once accepted, the report is the frozen snapshot - later data cannot change an agreed number.
   if (a) {
     return {
-      report: a.snapshot as MonthlyReport, complete: true, corrections,
+      report: a.snapshot as MonthlyReport, complete: true, corrections, invoice,
       acceptance: { acceptedBy: a.display_name, acceptedAt: (a.accepted_at as Date).toISOString(), ledgerSeq: Number(a.ledger_seq) },
     };
   }
-  return { ...(await compute(db, month, await now(db))), acceptance: null, corrections };
+  return { ...(await compute(db, month, await now(db))), acceptance: null, corrections, invoice: null };
 }
 
 export async function acceptReport(user: CurrentUser, month: IsoMonth) {
@@ -94,4 +100,70 @@ export function toCsv(v: ReportView): string {
     ["Status", v.acceptance ? `Accepted by ${v.acceptance.acceptedBy} at ${v.acceptance.acceptedAt} (ledger #${v.acceptance.ledgerSeq})` : "Draft - not accepted"],
   ];
   return lines.map((l) => l.map(cell).join(",")).join("\r\n") + "\r\n";
+}
+
+export const invoiceInput = z.object({ invoiceRef: z.string().trim().regex(/^[A-Za-z0-9/_.-]{3,40}$/, "Invoice number: 3-40 letters, digits or / _ . -") });
+
+/** Records the invoice raised for an accepted month. Once only; the figures behind it are frozen. */
+export async function recordInvoice(user: CurrentUser, month: IsoMonth, input: z.infer<typeof invoiceInput>) {
+  return withTx(async (tx) => {
+    const n = await now(tx);
+    await tx.query("SELECT pg_advisory_xact_lock(72026003)");
+    const acc = (await tx.query("SELECT billable_days FROM monthly_report WHERE report_month = $1", [month])).rows[0];
+    if (!acc) throw rejected("NOT_ACCEPTED", "An invoice can only be recorded after IRAS accepts the month.");
+    if ((await tx.query("SELECT 1 FROM invoice_record WHERE report_month = $1", [month])).rowCount) throw conflict("ALREADY_INVOICED", "An invoice is already recorded for this month.");
+    const { seq } = await appendLedger(tx, { actorId: user.id, eventType: "INVOICE_RECORDED", occurredAt: n.instant,
+      payload: { month, invoiceRef: input.invoiceRef, billable: Number(acc.billable_days) } });
+    await tx.query("INSERT INTO invoice_record (report_month, invoice_ref, raised_by, raised_at, ledger_seq) VALUES ($1, $2, $3, $4, $5)",
+      [month, input.invoiceRef, user.id, n.instant, seq]);
+    await notify(tx, await usersWithRole(tx, "SUPERVISOR"), {
+      kind: "INVOICE_RECORDED", title: `${formatMonth(month)} invoice raised`,
+      body: `Invoice ${input.invoiceRef} was raised for ${acc.billable_days} billable day(s) in ${formatMonth(month)}.`, link: `/reports?month=${month}`,
+    }, n.instant);
+    return { seq };
+  });
+}
+
+/** Excel workbook: summary, one row per person, and the PMO's corrections. Values are written as text and numbers, never formulas. */
+export async function toXlsx(v: ReportView): Promise<Buffer> {
+  const { default: ExcelJS } = await import("exceljs");
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "LeMans 2.0";
+  wb.created = new Date();
+  const r = v.report;
+  const summary = wb.addWorksheet("Summary");
+  summary.columns = [{ width: 34 }, { width: 50 }];
+  const rows: [string, string | number][] = [
+    ["Month", formatMonth(r.month)],
+    ["Status", v.acceptance ? "Accepted" : v.complete ? "Final draft" : "Month-to-date draft"],
+    ["Working days in period", r.workingDays],
+    ["Billable days", r.billable],
+    ["Capacity (assigned personnel-days)", r.capacity],
+    ["Attendance rate", Math.round(r.rate * 10000) / 10000],
+    ["Unexplained days", r.gaps],
+    ["Accepted by", v.acceptance?.acceptedBy ?? "-"],
+    ["Accepted at", v.acceptance?.acceptedAt ?? "-"],
+    ["Ledger entry of acceptance", v.acceptance?.ledgerSeq ?? "-"],
+    ["Invoice", v.invoice ? `${v.invoice.invoiceRef} (${v.invoice.raisedAt})` : "-"],
+  ];
+  rows.forEach(([k, val]) => summary.addRow([k, val]));
+  summary.getColumn(1).font = { bold: true };
+  summary.getCell("B6").numFmt = "0.0%";
+
+  const people = wb.addWorksheet("Personnel");
+  people.columns = [
+    { header: "Service personnel", key: "name", width: 28 }, { header: "Assigned days", key: "assignedDays", width: 14 },
+    { header: "Worked", key: "worked", width: 10 }, { header: "Corrected to worked", key: "correctedWorked", width: 20 },
+    { header: "Leave", key: "leave", width: 10 }, { header: "Unexplained", key: "gaps", width: 12 }, { header: "Billable", key: "billable", width: 10 },
+  ];
+  people.getRow(1).font = { bold: true };
+  r.rows.forEach((row) => people.addRow(row));
+  people.addRow({ name: "Total", assignedDays: r.capacity, billable: r.billable, gaps: r.gaps }).font = { bold: true };
+
+  const corr = wb.addWorksheet("Corrections");
+  corr.columns = [{ header: "Service personnel", key: "personnelName", width: 28 }, { header: "Date", key: "workDate", width: 12 },
+    { header: "Recorded as", key: "outcome", width: 14 }, { header: "Reason", key: "reason", width: 60 }];
+  corr.getRow(1).font = { bold: true };
+  v.corrections.forEach((c) => corr.addRow({ ...c, outcome: c.outcome === "WORKED" ? "Worked" : "Leave" }));
+  return Buffer.from(await wb.xlsx.writeBuffer());
 }

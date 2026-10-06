@@ -11,6 +11,11 @@ const EVENT_LABEL: Record<string, string> = {
   CHECK_IN: "Check-in", CHECK_IN_REJECTED: "Check-in rejected", LEAVE_REQUESTED: "Leave requested",
   LEAVE_APPROVED: "Leave approved", LEAVE_REJECTED: "Leave rejected", FOLLOW_UP: "PMO follow-up",
   DAY_CORRECTED: "Day corrected", REPORT_ACCEPTED: "Report accepted",
+  LEAVE_WITHDRAWN: "Leave withdrawn", LEAVE_CANCELLED: "Leave cancelled", ATTACHMENT_ADDED: "Document added", ENTITLEMENT_SET: "Entitlement set",
+  TEAM_CREATED: "Team created", TEAM_UPDATED: "Team updated", DELEGATION_CREATED: "Delegation created", DELEGATION_REVOKED: "Delegation revoked",
+  ADMIN_GRANT_REQUESTED: "Admin rights requested", ADMIN_GRANT_APPROVED: "Admin rights approved", ADMIN_GRANT_REJECTED: "Admin rights rejected",
+  SESSIONS_REVOKED: "Sessions ended", USERS_IMPORTED: "Users imported", HOLIDAY_ADDED: "Holiday added", HOLIDAY_REMOVED: "Holiday removed",
+  INVOICE_RECORDED: "Invoice recorded",
   USER_CREATED: "User created", USER_UPDATED: "User updated", USER_DEACTIVATED: "User deactivated", USER_REACTIVATED: "User reactivated",
 };
 
@@ -34,6 +39,17 @@ export default async function AuditPage(props: PageProps<"/audit">) {
           Last full verification: {check.lastFull ? dateTimeSgt(check.lastFull) : "not yet run"}.{" "}
           {!full && <Link href="/audit?verify=full" className="font-semibold text-brand-dark underline">Run a full verification now</Link>}
         </p>
+      </div>
+      <div className="mb-6">
+        <Card title="Export for auditors">
+          <form method="get" action="/api/audit/export" className="flex flex-wrap items-end gap-3 text-sm">
+            <label className="text-muted">From<input name="from" type="date" required className="mt-1 block rounded-lg border border-line px-3 py-2 text-ink" /></label>
+            <label className="text-muted">To<input name="to" type="date" required className="mt-1 block rounded-lg border border-line px-3 py-2 text-ink" /></label>
+            <button type="submit" className="rounded-lg bg-brand px-4 py-2 font-semibold text-white">Download CSV</button>
+            <a href="/api/audit/digest" className="font-semibold text-brand-dark underline">Download today&apos;s digest</a>
+          </form>
+          <p className="mt-2 text-xs text-muted">The digest records the entry count and the latest hash. Keep it outside this system (for example, filed with the monthly report): any later change to history will no longer match it.</p>
+        </Card>
       </div>
       <Card title={`Entries (${data.total})`}>
         <div className="overflow-x-auto">

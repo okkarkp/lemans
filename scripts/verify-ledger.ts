@@ -8,7 +8,7 @@ async function main() {
   await db.connect();
   try {
     const r = await verifyLedgerChain(db, { full: true });
-    if (r.ok) console.log(`LEDGER OK: ${r.count} entries verified from genesis; head ${r.head?.slice(0, 16)}`);
+    if (r.ok) console.log(`LEDGER OK: ${r.count} entries verified from genesis; head ${r.head}`);
     else { console.error(`LEDGER BROKEN at entry #${r.brokenAt} (${r.count} entries)`); process.exitCode = 2; }
   } finally {
     await db.end();
