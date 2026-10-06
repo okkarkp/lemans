@@ -10,6 +10,7 @@ type Role = "PERSONNEL" | "SUPERVISOR" | "PMO" | "ADMIN";
 interface User {
   id: string; displayName: string; role: Role; active: boolean; createdAt: string;
   personnelId: string | null; roleTitle: string | null; startDate: string | null; endDate: string | null; teamId: string | null;
+  email: string | null;
 }
 export interface Team { id: string; name: string }
 const ROLE_LABEL: Record<Role, string> = { PERSONNEL: "Service personnel", SUPERVISOR: "IRAS supervisor", PMO: "Accenture PMO", ADMIN: "System administrator" };
@@ -68,7 +69,7 @@ function UserRow({ user: u, self, today, teams, onDone }: { user: User; self: bo
   const [mode, setMode] = useState<"view" | "edit" | "deactivate">("view");
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
-  const [form, setForm] = useState({ displayName: u.displayName, role: u.role, roleTitle: u.roleTitle ?? "", startDate: u.startDate ?? "", endDate: u.endDate ?? "", teamId: u.teamId ?? "" });
+  const [form, setForm] = useState({ displayName: u.displayName, role: u.role, roleTitle: u.roleTitle ?? "", startDate: u.startDate ?? "", endDate: u.endDate ?? "", teamId: u.teamId ?? "", email: u.email ?? "" });
   const [lastDay, setLastDay] = useState(today);
 
   const run = (url: string, init: { method?: string; body: unknown }, ok: string) => start(async () => {
@@ -81,6 +82,7 @@ function UserRow({ user: u, self, today, teams, onDone }: { user: User; self: bo
     const body: Record<string, unknown> = {};
     if (form.displayName.trim() !== u.displayName) body.displayName = form.displayName;
     if (form.role !== u.role) body.role = form.role;
+    if ((form.email.trim() || null) !== u.email) body.email = form.email.trim() || null;
     if (u.personnelId) {
       if (form.roleTitle.trim() !== (u.roleTitle ?? "")) body.roleTitle = form.roleTitle;
       if (form.startDate !== u.startDate) body.startDate = form.startDate;
@@ -129,6 +131,10 @@ function UserRow({ user: u, self, today, teams, onDone }: { user: User; self: bo
           <div>
             <label htmlFor={`${idBase}-name`} className={labelClass}>Name</label>
             <input id={`${idBase}-name`} className={fieldClass} value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} />
+          </div>
+          <div>
+            <label htmlFor={`${idBase}-email`} className={labelClass}>Email (for notifications)</label>
+            <input id={`${idBase}-email`} type="email" className={fieldClass} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
           </div>
           <div>
             <label htmlFor={`${idBase}-role`} className={labelClass}>Role</label>
@@ -197,7 +203,7 @@ function UserRow({ user: u, self, today, teams, onDone }: { user: User; self: bo
 
 function CreateUser({ today, teams, onDone }: { today: string; teams: Team[]; onDone: (m: string) => void }) {
   const router = useRouter();
-  const empty = { id: "", displayName: "", role: "PERSONNEL" as Role, roleTitle: "", startDate: today, teamId: teams[0]?.id ?? "" };
+  const empty = { id: "", displayName: "", role: "PERSONNEL" as Role, roleTitle: "", startDate: today, teamId: teams[0]?.id ?? "", email: "" };
   const [form, setForm] = useState(empty);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
@@ -210,7 +216,8 @@ function CreateUser({ today, teams, onDone }: { today: string; teams: Team[]; on
       if (form.displayName.trim().length < 2) return setError("Enter a name.");
       if (personnel && (form.roleTitle.trim().length < 2 || !form.startDate || !form.teamId)) return setError("Service personnel need a job title, a team and an assignment start date.");
       start(async () => {
-        const body = personnel ? form : { id: form.id, displayName: form.displayName, role: form.role };
+        const email = form.email.trim() || undefined;
+        const body = personnel ? { ...form, email } : { id: form.id, displayName: form.displayName, role: form.role, email };
         const r = await api<{ id: string; personnelId: string | null }>("/api/admin/users", { body });
         if (!r.ok) return setError(r.message);
         setError(null); setForm(empty);
@@ -231,6 +238,10 @@ function CreateUser({ today, teams, onDone }: { today: string; teams: Team[]; on
       <div>
         <label htmlFor="new-name" className={labelClass}>Name</label>
         <input id="new-name" className={fieldClass} autoComplete="off" value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} />
+      </div>
+      <div>
+        <label htmlFor="new-email" className={labelClass}>Email (optional, for notifications)</label>
+        <input id="new-email" type="email" className={fieldClass} autoComplete="off" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
       </div>
       {personnel && (
         <>

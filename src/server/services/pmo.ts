@@ -10,6 +10,7 @@ import type { CurrentUser } from "../auth/session";
 import { listPersonnel } from "./reference";
 import { loadStatusResolver } from "./status";
 import { approvableTeams } from "./teams";
+import { notify, userOfPersonnel } from "./notify";
 
 export const correctionInput = z.object({
   personnelId: z.string().min(1),
@@ -56,6 +57,10 @@ export async function recordFollowUp(user: CurrentUser, personnelId: string) {
     // Idempotent: a repeated click records nothing new, so the ledger stays one entry per follow-up.
     if (ins.rowCount) {
       await appendLedger(tx, { actorId: user.id, eventType: "FOLLOW_UP", occurredAt: n.instant, payload: { personnelId, workDate: n.date } });
+      await notify(tx, await userOfPersonnel(tx, personnelId), {
+        kind: "PMO_FOLLOW_UP", title: "The PMO is following up your check-in",
+        body: "There is no check-in or leave recorded for you today. Please check in or contact the PMO.", link: "/me",
+      }, n.instant);
     }
   });
 }
@@ -75,6 +80,10 @@ export async function recordCorrection(user: CurrentUser, input: z.infer<typeof 
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [input.personnelId, input.workDate, input.outcome, input.reason, user.id, n.instant]);
     await appendLedger(tx, { actorId: user.id, eventType: "DAY_CORRECTED", occurredAt: n.instant, payload: { ...input } });
+    await notify(tx, await userOfPersonnel(tx, input.personnelId), {
+      kind: "DAY_CORRECTED", title: "A day on your record was corrected",
+      body: `${input.workDate} was recorded as ${input.outcome === "WORKED" ? "worked" : "leave"} by the PMO. Reason: ${input.reason}`, link: "/me",
+    }, n.instant);
   });
 }
 

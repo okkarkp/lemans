@@ -7,6 +7,8 @@ import { buildMonthlyReport, type MonthlyReport } from "../domain/report";
 import { conflict, rejected } from "../errors";
 import type { CurrentUser } from "../auth/session";
 import { listPersonnel } from "./reference";
+import { notify, usersWithRole } from "./notify";
+import { formatMonth } from "../domain/calendar";
 import { loadStatusResolver } from "./status";
 
 export interface Acceptance { acceptedBy: string; acceptedAt: string; ledgerSeq: number }
@@ -68,6 +70,10 @@ export async function acceptReport(user: CurrentUser, month: IsoMonth) {
       `INSERT INTO monthly_report (report_month, billable_days, capacity_days, snapshot, accepted_by, accepted_at, ledger_seq)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [month, report.billable, report.capacity, JSON.stringify(report), user.id, n.instant, seq]);
+    await notify(tx, await usersWithRole(tx, "PMO"), {
+      kind: "REPORT_ACCEPTED", title: `${formatMonth(month)} report accepted`,
+      body: `IRAS accepted the ${formatMonth(month)} report: ${report.billable} billable day(s). The invoice can now be raised.`, link: `/reports?month=${month}`,
+    }, n.instant);
     return { seq };
   });
 }

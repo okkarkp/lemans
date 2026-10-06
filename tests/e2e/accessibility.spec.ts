@@ -12,6 +12,7 @@ const screens: [string, string | null, string][] = [
   ["exceptions", "Accenture PMO (demo)", "/pmo"],
   ["audit ledger", "Accenture PMO (demo)", "/audit"],
   ["user management", "System Administrator (demo)", "/admin/users"],
+  ["notifications", "IRAS Supervisor (demo)", "/notifications"],
 ];
 
 for (const [label, who, path] of screens) {

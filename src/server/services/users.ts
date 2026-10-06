@@ -25,6 +25,7 @@ export const createUserInput = z.object({
   roleTitle: z.string().trim().min(2).max(60).optional(),
   startDate: isoDate.optional(),
   teamId: z.string().min(1).optional(),
+  email: z.string().trim().toLowerCase().email("Enter a valid email address.").max(200).optional(),
 }).refine((v) => v.role !== "PERSONNEL" || (v.roleTitle && v.startDate && v.teamId), "Service personnel need a job title, a team and an assignment start date.");
 
 export const updateUserInput = z.object({
@@ -34,6 +35,7 @@ export const updateUserInput = z.object({
   startDate: isoDate.optional(),
   endDate: isoDate.nullable().optional(),
   teamId: z.string().min(1).optional(),
+  email: z.string().trim().toLowerCase().email("Enter a valid email address.").max(200).nullable().optional(),
 }).refine((v) => Object.values(v).some((x) => x !== undefined), "Nothing to change.");
 
 export const deactivateInput = z.object({ lastDay: isoDate.optional() });
@@ -41,16 +43,17 @@ export const deactivateInput = z.object({ lastDay: isoDate.optional() });
 export interface UserView {
   id: string; displayName: string; role: Role; active: boolean; createdAt: string;
   personnelId: string | null; roleTitle: string | null; startDate: IsoDate | null; endDate: IsoDate | null; teamId: string | null;
+  email: string | null;
 }
 
 const USER_SELECT = `
-  SELECT u.id, u.display_name, u.role, u.active, u.created_at, u.personnel_id, p.role_title, p.start_date, p.end_date, p.team_id
+  SELECT u.id, u.display_name, u.role, u.active, u.created_at, u.personnel_id, u.email, p.role_title, p.start_date, p.end_date, p.team_id
   FROM app_user u LEFT JOIN personnel p ON p.id = u.personnel_id`;
 const mapUser = (r: Record<string, unknown>): UserView => ({
   id: r.id as string, displayName: r.display_name as string, role: r.role as Role, active: r.active as boolean,
   createdAt: (r.created_at as Date).toISOString(), personnelId: (r.personnel_id as string) ?? null,
   roleTitle: (r.role_title as string) ?? null, startDate: (r.start_date as string) ?? null, endDate: (r.end_date as string) ?? null,
-  teamId: (r.team_id as string) ?? null,
+  teamId: (r.team_id as string) ?? null, email: (r.email as string) ?? null,
 });
 
 export async function listUsers(): Promise<UserView[]> {
@@ -115,8 +118,8 @@ export async function createUser(admin: CurrentUser, input: z.infer<typeof creat
         [personnelId, input.displayName, input.roleTitle, input.startDate, input.teamId]);
     }
     await tx.query(
-      "INSERT INTO app_user (id, display_name, role, personnel_id, created_at) VALUES ($1, $2, $3, $4, $5)",
-      [input.id, input.displayName, input.role, personnelId, n.instant]);
+      "INSERT INTO app_user (id, display_name, role, personnel_id, created_at, email) VALUES ($1, $2, $3, $4, $5, $6)",
+      [input.id, input.displayName, input.role, personnelId, n.instant, input.email ?? null]);
     // The ledger records identifiers and roles, not names: names are personal data and can change.
     await appendLedger(tx, {
       actorId: admin.id, eventType: "USER_CREATED", occurredAt: n.instant,
@@ -146,6 +149,10 @@ export async function updateUser(admin: CurrentUser, id: string, input: z.infer<
       await tx.query("UPDATE app_user SET display_name = $2 WHERE id = $1", [id, input.displayName]);
       if (u.personnelId) await tx.query("UPDATE personnel SET display_name = $2 WHERE id = $1", [u.personnelId, input.displayName]);
       changes.displayName = true; // the value itself stays out of the ledger
+    }
+    if (input.email !== undefined && input.email !== u.email) {
+      await tx.query("UPDATE app_user SET email = $2 WHERE id = $1", [id, input.email]);
+      changes.email = true; // the address itself is personal data and stays out of the ledger
     }
     const periodTouched = input.startDate !== undefined || input.endDate !== undefined || input.roleTitle !== undefined || input.teamId !== undefined;
     if (periodTouched) {

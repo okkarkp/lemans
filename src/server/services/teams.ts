@@ -6,6 +6,7 @@ import { appendLedger } from "../ledger";
 import { addDays, isIsoDate, type IsoDate } from "../domain/calendar";
 import { badRequest, conflict, forbidden, notFound, rejected } from "../errors";
 import type { CurrentUser } from "../auth/session";
+import { notify } from "./notify";
 
 const MAX_DELEGATION_DAYS = 90;
 const isoDate = z.string().refine(isIsoDate, "Dates must be valid (YYYY-MM-DD).");
@@ -123,6 +124,10 @@ export async function createDelegation(user: CurrentUser, input: z.infer<typeof 
     const id = Number(r.rows[0].id);
     await appendLedger(tx, { actorId: user.id, eventType: "DELEGATION_CREATED", occurredAt: n.instant,
       payload: { delegationId: id, delegatorId, delegateId: input.delegateId, startDate: input.startDate, endDate: input.endDate } });
+    await notify(tx, [input.delegateId], {
+      kind: "DELEGATION_CREATED", title: "You are covering leave approvals",
+      body: `You will approve leave on behalf of another supervisor from ${input.startDate} to ${input.endDate}.`, link: "/supervisor",
+    }, n.instant);
     return { id };
   });
 }

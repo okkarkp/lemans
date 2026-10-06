@@ -130,6 +130,15 @@ test.describe("production mode (DEMO_MODE=false)", () => {
     expect((await request.get(`${PROD}/api/health`)).status()).toBe(200);
   });
 
+  test("the job trigger needs the exact token, and is off when no token is configured", async ({ request }) => {
+    expect((await request.post("/api/internal/jobs", { headers: { "x-jobs-token": "anything" } })).status()).toBe(404);
+    expect((await request.post(`${PROD}/api/internal/jobs`)).status()).toBe(404);
+    expect((await request.post(`${PROD}/api/internal/jobs`, { headers: { "x-jobs-token": "test-only-jobs-token-0123456789abcdeX" } })).status()).toBe(404);
+    const ok = await request.post(`${PROD}/api/internal/jobs`, { headers: { "x-jobs-token": "test-only-jobs-token-0123456789abcdef" } });
+    expect(ok.status()).toBe(200);
+    expect(await ok.json()).toHaveProperty("ran");
+  });
+
   test("check-in evidence comes from the gateway headers, not the user", async ({ request }) => {
     const cookie = `lemans_session=${await token("u-sp03", "1h")}`;
     // Off the office network with no device-compliance header: WFH is refused.

@@ -9,6 +9,14 @@ const schema = z.object({
   COVERAGE_FLOOR: z.coerce.number().min(0).max(1).default(0.8),
   ATTENDANCE_FLOOR: z.coerce.number().min(0).max(1).default(0.85),
   MISSING_CHECKIN_ALERT_TIME: z.string().regex(/^\d{2}:\d{2}$/).default("12:00"),
+  CHECKIN_REMINDER_TIME: z.string().regex(/^\d{2}:\d{2}$/).default("11:00"),
+  APPROVAL_REMINDER_AFTER_DAYS: z.coerce.number().int().min(1).max(30).default(2),
+  // Shared secret for the local job trigger. When unset the trigger is disabled.
+  JOBS_TOKEN: z.string().min(32).optional(),
+  EMAIL_TRANSPORT: z.enum(["log", "smtp"]).default("log"),
+  SMTP_URL: z.string().url().optional(),
+  EMAIL_FROM: z.string().default("LeMans 2.0 <no-reply@lemans.invalid>"),
+  APP_BASE_URL: z.string().url().default("http://localhost:3100"),
 });
 
 export type AppConfig = z.infer<typeof schema>;

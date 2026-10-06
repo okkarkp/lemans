@@ -18,6 +18,6 @@ export default defineConfig({
   use: { baseURL: "http://localhost:3200", channel: "chrome", trace: "retain-on-failure", screenshot: "only-on-failure" },
   webServer: [
     { command: "npx next start -p 3200", port: 3200, reuseExistingServer: false, env: { ...common, DEMO_MODE: "true" }, timeout: 60_000 },
-    { command: "npx next start -p 3201", port: 3201, reuseExistingServer: false, env: { ...common, DEMO_MODE: "false" }, timeout: 60_000 },
+    { command: "npx next start -p 3201", port: 3201, reuseExistingServer: false, env: { ...common, DEMO_MODE: "false", JOBS_TOKEN: "test-only-jobs-token-0123456789abcdef" }, timeout: 60_000 },
   ],
 });

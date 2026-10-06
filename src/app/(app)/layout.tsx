@@ -7,6 +7,8 @@ import { readDemoSignals } from "@/server/trust";
 import { DemoBar } from "@/components/demo-bar";
 import { NavLink } from "@/components/nav-link";
 import { SignOutButton } from "@/components/sign-out-button";
+import { NotificationBell } from "@/components/notification-bell";
+import { unreadCount } from "@/server/services/notify";
 
 const NAV: Record<Role, { href: string; label: string }[]> = {
   PERSONNEL: [{ href: "/me", label: "My day" }],
@@ -21,6 +23,7 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
   if (!user) redirect("/login");
   const demo = config().DEMO_MODE;
   const [n, signals] = demo ? await Promise.all([now(pool()), readDemoSignals()]) : [null, null];
+  const unread = await unreadCount(user.id);
 
   return (
     <>
@@ -31,6 +34,7 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
             <nav aria-label="Main" className="flex gap-1">{NAV[user.role].map((l) => <NavLink key={l.href} href={l.href}>{l.label}</NavLink>)}</nav>
           </div>
           <div className="flex items-center gap-4">
+            <NotificationBell unread={unread} />
             <div className="text-right text-sm leading-tight">
               <p className="font-semibold">{user.displayName}</p>
               <p className="text-xs text-white/70">{ROLE_LABEL[user.role]}</p>

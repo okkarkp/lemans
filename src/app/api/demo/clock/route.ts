@@ -6,6 +6,7 @@ import { DEMO_NOW_PATTERN, setDemoNow } from "@/server/clock";
 import { authorise } from "@/server/auth/session";
 import { AppError } from "@/server/errors";
 import { readJson, route } from "@/server/http/handler";
+import { runDueJobs } from "@/server/services/jobs";
 
 const input = z.object({ now: z.string().regex(DEMO_NOW_PATTERN, "Use YYYY-MM-DDTHH:mm.") });
 
@@ -13,5 +14,7 @@ export const POST = route(async (req) => {
   if (!config().DEMO_MODE) throw new AppError(404, "NOT_FOUND", "Not found.");
   await authorise(["PERSONNEL", "SUPERVISOR", "PMO"]);
   await setDemoNow(pool(), input.parse(await readJson(req)).now);
+  // In a demo, moving the clock is how time passes, so scheduled reminders and alerts fire here.
+  await runDueJobs();
   return NextResponse.json({ ok: true });
 });

@@ -12,6 +12,7 @@ import { isBalanced } from "../domain/leave-balance";
 import { balanceFor } from "./entitlements";
 import { holidaySet, isAssigned, listPersonnel } from "./reference";
 import { approvableTeams } from "./teams";
+import { approversOf, notify, userOfPersonnel } from "./notify";
 
 export const LEAVE_TYPES = { ANNUAL: "Annual leave", MEDICAL: "Medical leave", CHILDCARE: "Childcare leave", OTHER: "Other leave" } as const;
 const MAX_SPAN_DAYS = 30;
@@ -100,6 +101,11 @@ export async function submitLeave(user: CurrentUser, input: z.infer<typeof leave
       actorId: user.id, eventType: "LEAVE_REQUESTED", occurredAt: n.instant,
       payload: { requestId: id, personnelId, ...input, days, coverage: round(cov.minRatio) },
     });
+    await notify(tx, await approversOf(tx, me.teamId, n.date), {
+      kind: "LEAVE_SUBMITTED", title: "Leave request waiting for approval",
+      // The leave type is left out on purpose: messages may go by email, and "medical" is health data.
+      body: `${me.name} asked for ${days} day(s) of leave from ${input.startDate}.`, link: "/supervisor",
+    }, n.instant);
     return { id };
   });
 }
@@ -132,6 +138,11 @@ export async function decideLeave(user: CurrentUser, requestId: number, input: z
       actorId: user.id, eventType: status === "APPROVED" ? "LEAVE_APPROVED" : "LEAVE_REJECTED", occurredAt: n.instant,
       payload: { requestId, personnelId: req.personnel_id, note: input.note ?? null },
     });
+    await notify(tx, await userOfPersonnel(tx, req.personnel_id), {
+      kind: status === "APPROVED" ? "LEAVE_APPROVED" : "LEAVE_REJECTED",
+      title: status === "APPROVED" ? "Leave approved" : "Leave not approved",
+      body: `Your leave from ${req.start_date} to ${req.end_date} was ${status.toLowerCase()}${input.note ? `: ${input.note}` : "."}`, link: "/me",
+    }, n.instant);
     return { status };
   });
 }
@@ -149,13 +160,19 @@ export async function cancelLeave(user: CurrentUser, requestId: number) {
 async function changeOwnLeave(user: CurrentUser, requestId: number, from: string, to: string, event: "LEAVE_WITHDRAWN" | "LEAVE_CANCELLED") {
   return withTx(async (tx) => {
     const n = await now(tx);
-    const req = (await tx.query("SELECT * FROM leave_request WHERE id = $1 FOR UPDATE", [requestId])).rows[0];
+    const req = (await tx.query(
+      "SELECT l.*, p.team_id, p.display_name FROM leave_request l JOIN personnel p ON p.id = l.personnel_id WHERE l.id = $1 FOR UPDATE OF l",
+      [requestId])).rows[0];
     // Someone else's request is reported as not found, so ids cannot be probed.
     if (!req || req.personnel_id !== user.personnelId) throw notFound("Leave request");
     if (req.status !== from) throw conflict("WRONG_STATUS", `Only ${from.toLowerCase()} requests can be ${to.toLowerCase()}. This one is ${req.status.toLowerCase()}.`);
     if (to === "CANCELLED" && req.start_date <= n.date) throw rejected("ALREADY_STARTED", "Leave that has started cannot be cancelled. Ask the PMO to record a correction.");
     await tx.query("UPDATE leave_request SET status = $2, cancelled_at = $3 WHERE id = $1", [requestId, to, n.instant]);
     await appendLedger(tx, { actorId: user.id, eventType: event, occurredAt: n.instant, payload: { requestId, personnelId: req.personnel_id } });
+    await notify(tx, await approversOf(tx, req.team_id, n.date), {
+      kind: event, title: to === "WITHDRAWN" ? "Leave request withdrawn" : "Approved leave cancelled",
+      body: `${req.display_name} ${to === "WITHDRAWN" ? "withdrew the request" : "cancelled the leave"} from ${req.start_date} to ${req.end_date}.`, link: "/supervisor",
+    }, n.instant);
     return { status: to };
   });
 }
