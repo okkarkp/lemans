@@ -17,7 +17,7 @@ describe("user management", () => {
 
   it("creates service personnel with the next SP number and an assignment period, without names in the ledger", async () => {
     const r = await createUser(admin, { id: "new.dev", displayName: "Personnel 07", role: "PERSONNEL", roleTitle: "Developer", startDate: "2026-09-21", teamId: "APP" });
-    expect(r).toEqual({ id: "new.dev", personnelId: "SP07" });
+    expect(r).toMatchObject({ id: "new.dev", personnelId: "SP07", pendingApproval: false });
     expect((await listPersonnel(pool(), "2026-09-21")).map((p) => p.id)).toContain("SP07");
     expect((await listPersonnel(pool(), "2026-09-18")).map((p) => p.id)).not.toContain("SP07");
     const e = (await pool().query("SELECT payload FROM ledger_entry WHERE event_type = 'USER_CREATED'")).rows[0].payload;

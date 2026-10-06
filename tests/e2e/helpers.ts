@@ -1,5 +1,22 @@
 import { expect, type Page } from "@playwright/test";
-import { reseed } from "../support/test-db";
+import { randomUUID } from "node:crypto";
+import { SignJWT } from "jose";
+import { reseed, testDatabaseUrl, withClient } from "../support/test-db";
+
+const SECRET = new TextEncoder().encode("test-only-session-key-not-used-for-anything-real");
+
+/** A real server-side session row plus its signed cookie value, for HTTP-level tests. */
+export async function sessionToken(userId: string, opts: { sid?: string; exp?: string | number; key?: Uint8Array } = {}) {
+  const sid = opts.sid ?? randomUUID();
+  if (!opts.sid) {
+    await withClient(testDatabaseUrl(), (c) => c.query(
+      "INSERT INTO user_session (id, user_id, expires_at) SELECT $1, $2, now() + interval '1 hour' WHERE EXISTS (SELECT 1 FROM app_user WHERE id = $2)",
+      [sid, userId]));
+  }
+  return new SignJWT({ sid }).setProtectedHeader({ alg: "HS256" }).setSubject(userId).setIssuer("lemans2")
+    .setIssuedAt().setExpirationTime(opts.exp ?? "1h").sign(opts.key ?? SECRET);
+}
+export const dbExec = (sql: string, params: unknown[] = []) => withClient(testDatabaseUrl(), (c) => c.query(sql, params));
 
 export const BASE = "http://localhost:3200";
 export { reseed };
@@ -9,7 +26,7 @@ export async function signIn(page: Page, name: string) {
   await page.goto("/login");
   await page.getByLabel("Identity").selectOption({ label: name });
   await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
 }
 
 export async function setSignals(page: Page, device: "WOG laptop (managed)" | "Personal phone (unmanaged)", network: "IRAS office network" | "Remote / home") {

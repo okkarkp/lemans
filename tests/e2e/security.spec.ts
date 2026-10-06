@@ -1,10 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { SignJWT } from "jose";
-import { apiPost, BASE, reseed, signIn } from "./helpers";
-
-const SECRET = new TextEncoder().encode("test-only-session-key-not-used-for-anything-real");
-const token = (sub: string, exp: string | number, key = SECRET) =>
-  new SignJWT({}).setProtectedHeader({ alg: "HS256" }).setSubject(sub).setIssuer("lemans2").setIssuedAt().setExpirationTime(exp).sign(key);
+import { apiPost, BASE, dbExec, reseed, sessionToken, signIn } from "./helpers";
 
 test.beforeAll(async () => { await reseed(); });
 
@@ -58,17 +53,34 @@ test.describe("sessions", () => {
   test("no, expired, forged or unknown-user tokens are all treated as signed out", async ({ request }) => {
     const cases = [
       undefined,
-      await token("u-sp01", Math.floor(Date.now() / 1000) - 60),
-      await token("u-sp01", "1h", new TextEncoder().encode("a-completely-different-key-of-sufficient-length")),
-      await token("u-nobody", "1h"),
+      await sessionToken("u-sp01", { exp: Math.floor(Date.now() / 1000) - 60 }),
+      await sessionToken("u-sp01", { key: new TextEncoder().encode("a-completely-different-key-of-sufficient-length") }),
+      await sessionToken("u-nobody"),
+      await sessionToken("u-sp01", { sid: "00000000-0000-4000-8000-000000000000" }), // well-signed, but no such session
       "not-a-jwt",
     ];
     for (const t of cases) {
       const r = await request.get("/api/leave/coverage?start=2026-09-28&end=2026-09-28", { headers: t ? { cookie: `lemans_session=${t}` } : {} });
       expect(r.status(), `token ${String(t).slice(0, 12)}`).toBe(401);
     }
-    const ok = await request.get("/api/leave/coverage?start=2026-09-28&end=2026-09-28", { headers: { cookie: `lemans_session=${await token("u-sp01", "1h")}` } });
+    const ok = await request.get("/api/leave/coverage?start=2026-09-28&end=2026-09-28", { headers: { cookie: `lemans_session=${await sessionToken("u-sp01")}` } });
     expect(ok.status()).toBe(200);
+  });
+
+  test("signing out ends the session on the server, so a copied cookie stops working", async ({ page, request }) => {
+    await signIn(page, "Personnel 01");
+    const cookie = (await page.context().cookies()).find((c) => c.name === "lemans_session")!.value;
+    const probe = () => request.get("/api/leave/coverage?start=2026-09-28&end=2026-09-28", { headers: { cookie: `lemans_session=${cookie}` } });
+    expect((await probe()).status()).toBe(200);
+    await apiPost(page, "/api/auth/logout", {});
+    expect((await probe()).status()).toBe(401);
+  });
+
+  test("a session idle past the timeout is ended", async ({ page }) => {
+    await signIn(page, "Personnel 01");
+    await dbExec("UPDATE user_session SET last_seen_at = now() - interval '31 minutes' WHERE user_id = 'u-sp01' AND revoked_at IS NULL");
+    await page.goto("/me");
+    await expect(page).toHaveURL(/\/login$/);
   });
 
   test("session cookie is HttpOnly, SameSite=Lax and Secure", async ({ page }) => {
@@ -140,7 +152,7 @@ test.describe("production mode (DEMO_MODE=false)", () => {
   });
 
   test("check-in evidence comes from the gateway headers, not the user", async ({ request }) => {
-    const cookie = `lemans_session=${await token("u-sp03", "1h")}`;
+    const cookie = `lemans_session=${await sessionToken("u-sp03")}`;
     // Off the office network with no device-compliance header: WFH is refused.
     const remote = await request.post(`${PROD}/api/attendance/check-in`, {
       data: { location: "WFH" }, headers: { origin: PROD, cookie, "x-forwarded-for": "203.0.113.9" },

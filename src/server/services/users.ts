@@ -6,7 +6,8 @@ import { now } from "../clock";
 import { appendLedger } from "../ledger";
 import { isIsoDate, monthBounds, type IsoDate } from "../domain/calendar";
 import { badRequest, conflict, notFound, rejected } from "../errors";
-import type { CurrentUser, Role } from "../auth/session";
+import { revokeAllSessions, type CurrentUser, type Role } from "../auth/session";
+import { notify, usersWithRole } from "./notify";
 
 /**
  * User administration. Sign-in itself is WOG SSO; this controls who may sign in, as what, and -
@@ -14,7 +15,7 @@ import type { CurrentUser, Role } from "../auth/session";
  * deleted: history must stay attributable to the person who made it.
  */
 
-const USER_LOCK = 72026004;
+export const USER_LOCK = 72026004;
 const ROLES = ["PERSONNEL", "SUPERVISOR", "PMO", "ADMIN"] as const;
 const isoDate = z.string().refine(isIsoDate, "Dates must be valid (YYYY-MM-DD).");
 
@@ -105,28 +106,36 @@ export async function createUser(admin: CurrentUser, input: z.infer<typeof creat
   return withTx(async (tx) => {
     const n = await now(tx);
     await tx.query("SELECT pg_advisory_xact_lock($1)", [USER_LOCK]);
-    if ((await tx.query("SELECT 1 FROM app_user WHERE id = $1", [input.id])).rowCount) {
-      throw conflict("LOGIN_TAKEN", "That login ID is already in use. Deactivated accounts keep their ID.");
-    }
-    let personnelId: string | null = null;
-    if (input.role === "PERSONNEL") {
-      const max = await tx.query("SELECT coalesce(max(substring(id from 3)::int), 0) AS n FROM personnel WHERE id ~ '^SP[0-9]+$'");
-      personnelId = `SP${String(Number(max.rows[0].n) + 1).padStart(2, "0")}`;
-      if (!(await tx.query("SELECT 1 FROM team WHERE id = $1", [input.teamId])).rowCount) throw badRequest("TEAM_UNKNOWN", "Choose an existing team.");
-      await tx.query(
-        "INSERT INTO personnel (id, display_name, role_title, start_date, team_id) VALUES ($1, $2, $3, $4, $5)",
-        [personnelId, input.displayName, input.roleTitle, input.startDate, input.teamId]);
-    }
-    await tx.query(
-      "INSERT INTO app_user (id, display_name, role, personnel_id, created_at, email) VALUES ($1, $2, $3, $4, $5, $6)",
-      [input.id, input.displayName, input.role, personnelId, n.instant, input.email ?? null]);
-    // The ledger records identifiers and roles, not names: names are personal data and can change.
-    await appendLedger(tx, {
-      actorId: admin.id, eventType: "USER_CREATED", occurredAt: n.instant,
-      payload: { userId: input.id, role: input.role, personnelId, startDate: input.startDate ?? null, teamId: input.teamId ?? null },
-    });
-    return { id: input.id, personnelId };
+    return createUserTx(tx, admin, input, n.instant);
   });
+}
+
+/** Creates one account inside the caller's transaction (which must hold USER_LOCK). */
+export async function createUserTx(tx: PoolClient, admin: CurrentUser, input: z.infer<typeof createUserInput>, at: Date) {
+  if ((await tx.query("SELECT 1 FROM app_user WHERE id = $1", [input.id])).rowCount) {
+    throw conflict("LOGIN_TAKEN", "That login ID is already in use. Deactivated accounts keep their ID.");
+  }
+  let personnelId: string | null = null;
+  if (input.role === "PERSONNEL") {
+    const max = await tx.query("SELECT coalesce(max(substring(id from 3)::int), 0) AS n FROM personnel WHERE id ~ '^SP[0-9]+$'");
+    personnelId = `SP${String(Number(max.rows[0].n) + 1).padStart(2, "0")}`;
+    if (!(await tx.query("SELECT 1 FROM team WHERE id = $1", [input.teamId])).rowCount) throw badRequest("TEAM_UNKNOWN", "Choose an existing team.");
+    await tx.query(
+      "INSERT INTO personnel (id, display_name, role_title, start_date, team_id) VALUES ($1, $2, $3, $4, $5)",
+      [personnelId, input.displayName, input.roleTitle, input.startDate, input.teamId]);
+  }
+  // A new administrator stays inactive until a second administrator approves.
+  const needsApproval = input.role === "ADMIN";
+  await tx.query(
+    "INSERT INTO app_user (id, display_name, role, personnel_id, created_at, email, active) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    [input.id, input.displayName, input.role, personnelId, at, input.email ?? null, !needsApproval]);
+  // The ledger records identifiers and roles, not names: names are personal data and can change.
+  await appendLedger(tx, {
+    actorId: admin.id, eventType: "USER_CREATED", occurredAt: at,
+    payload: { userId: input.id, role: input.role, personnelId, startDate: input.startDate ?? null, teamId: input.teamId ?? null },
+  });
+  if (needsApproval) await requestAdminGrant(tx, admin, input.id, null, at);
+  return { id: input.id, personnelId, pendingApproval: needsApproval };
 }
 
 export async function updateUser(admin: CurrentUser, id: string, input: z.infer<typeof updateUserInput>) {
@@ -142,8 +151,14 @@ export async function updateUser(admin: CurrentUser, id: string, input: z.infer<
         throw rejected("ROLE_CHANGE_NOT_ALLOWED", "Service personnel accounts cannot become staff accounts, or the reverse. Create a separate account.");
       }
       if (u.role === "ADMIN" && u.active && (await activeAdmins(tx)) <= 1) throw rejected("LAST_ADMIN", "At least one active administrator is required.");
-      await tx.query("UPDATE app_user SET role = $2 WHERE id = $1", [id, input.role]);
-      changes.role = { from: u.role, to: input.role };
+      if (input.role === "ADMIN") {
+        // The role changes only when a second administrator approves.
+        await requestAdminGrant(tx, admin, id, u.role, n.instant);
+        changes.adminRequested = true;
+      } else {
+        await tx.query("UPDATE app_user SET role = $2 WHERE id = $1", [id, input.role]);
+        changes.role = { from: u.role, to: input.role };
+      }
     }
     if (input.displayName && input.displayName !== u.displayName) {
       await tx.query("UPDATE app_user SET display_name = $2 WHERE id = $1", [id, input.displayName]);
@@ -202,6 +217,7 @@ export async function deactivateUser(admin: CurrentUser, id: string, input: z.in
       lastDay = newEnd;
     }
     await tx.query("UPDATE app_user SET active = false WHERE id = $1", [id]);
+    await revokeAllSessions(tx, id, "DEACTIVATED");
     await appendLedger(tx, { actorId: admin.id, eventType: "USER_DEACTIVATED", occurredAt: n.instant, payload: { userId: id, lastDay } });
     return { lastDay };
   });
@@ -213,11 +229,71 @@ export async function reactivateUser(admin: CurrentUser, id: string) {
     await tx.query("SELECT pg_advisory_xact_lock($1)", [USER_LOCK]);
     const u = await loadForUpdate(tx, id);
     if (u.active) throw conflict("ALREADY_ACTIVE", "This account is already active.");
+    if ((await tx.query("SELECT 1 FROM admin_grant WHERE target_user_id = $1 AND status = 'PENDING'", [id])).rowCount) {
+      throw rejected("PENDING_ADMIN_APPROVAL", "This administrator account is waiting for a second administrator's approval.");
+    }
     // A finished assignment is not reopened: the days in between would turn into false gaps.
     if (u.personnelId && u.endDate !== null && u.endDate < n.date) {
       throw rejected("ASSIGNMENT_ENDED", `This assignment ended on ${u.endDate}. Create a new account for a new assignment.`);
     }
     await tx.query("UPDATE app_user SET active = true WHERE id = $1", [id]);
     await appendLedger(tx, { actorId: admin.id, eventType: "USER_REACTIVATED", occurredAt: n.instant, payload: { userId: id } });
+  });
+}
+
+async function requestAdminGrant(tx: PoolClient, admin: CurrentUser, targetId: string, fromRole: Role | null, at: Date) {
+  if ((await tx.query("SELECT 1 FROM admin_grant WHERE target_user_id = $1 AND status = 'PENDING'", [targetId])).rowCount) {
+    throw conflict("GRANT_PENDING", "An administrator request for this account is already waiting for approval.");
+  }
+  const r = await tx.query<{ id: string }>(
+    "INSERT INTO admin_grant (target_user_id, from_role, requested_by, requested_at) VALUES ($1, $2, $3, $4) RETURNING id",
+    [targetId, fromRole, admin.id, at]);
+  await appendLedger(tx, { actorId: admin.id, eventType: "ADMIN_GRANT_REQUESTED", occurredAt: at, payload: { grantId: Number(r.rows[0].id), userId: targetId, fromRole } });
+  const others = (await usersWithRole(tx, "ADMIN")).filter((x) => x !== admin.id);
+  await notify(tx, others, {
+    kind: "ADMIN_GRANT_REQUESTED", title: "Administrator rights need your approval",
+    body: "Another administrator asked to grant administrator rights. A second administrator must approve.", link: "/admin/users",
+  }, at);
+}
+
+export interface GrantView { id: number; targetUserId: string; targetName: string; fromRole: Role | null; requestedBy: string; requestedAt: string }
+
+export async function listPendingGrants(): Promise<GrantView[]> {
+  const r = await pool().query(
+    `SELECT g.id, g.target_user_id, u.display_name, g.from_role, g.requested_by, g.requested_at
+     FROM admin_grant g JOIN app_user u ON u.id = g.target_user_id WHERE g.status = 'PENDING' ORDER BY g.requested_at`);
+  return r.rows.map((g) => ({ id: Number(g.id), targetUserId: g.target_user_id, targetName: g.display_name, fromRole: g.from_role, requestedBy: g.requested_by, requestedAt: (g.requested_at as Date).toISOString() }));
+}
+
+/** Four eyes: the approver must be a different administrator from the one who asked. */
+export async function decideAdminGrant(admin: CurrentUser, grantId: number, approve: boolean) {
+  return withTx(async (tx) => {
+    const n = await now(tx);
+    await tx.query("SELECT pg_advisory_xact_lock($1)", [USER_LOCK]);
+    const g = (await tx.query("SELECT * FROM admin_grant WHERE id = $1 FOR UPDATE", [grantId])).rows[0];
+    if (!g) throw notFound("Request");
+    if (g.status !== "PENDING") throw conflict("ALREADY_DECIDED", "This request has already been decided.");
+    if (g.requested_by === admin.id) throw rejected("SAME_ADMIN", "A different administrator must approve this request.");
+    if (g.target_user_id === admin.id) throw rejected("SELF_CHANGE", "You cannot decide on your own administrator rights.");
+    await tx.query("UPDATE admin_grant SET status = $2, decided_by = $3, decided_at = $4 WHERE id = $1",
+      [grantId, approve ? "APPROVED" : "REJECTED", admin.id, n.instant]);
+    if (approve) {
+      if (g.from_role === null) await tx.query("UPDATE app_user SET active = true WHERE id = $1", [g.target_user_id]);
+      else await tx.query("UPDATE app_user SET role = 'ADMIN' WHERE id = $1", [g.target_user_id]);
+    }
+    await appendLedger(tx, { actorId: admin.id, eventType: approve ? "ADMIN_GRANT_APPROVED" : "ADMIN_GRANT_REJECTED", occurredAt: n.instant,
+      payload: { grantId, userId: g.target_user_id } });
+    return { status: approve ? "APPROVED" : "REJECTED" };
+  });
+}
+
+/** Signs a user out everywhere, for example when a device is lost. */
+export async function signOutEverywhere(admin: CurrentUser, userId: string) {
+  return withTx(async (tx) => {
+    const n = await now(tx);
+    if (!(await tx.query("SELECT 1 FROM app_user WHERE id = $1", [userId])).rowCount) throw notFound("User");
+    const count = await revokeAllSessions(tx, userId, "ADMIN_REVOKED");
+    await appendLedger(tx, { actorId: admin.id, eventType: "SESSIONS_REVOKED", occurredAt: n.instant, payload: { userId, sessions: count } });
+    return { sessions: count };
   });
 }

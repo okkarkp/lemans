@@ -9,6 +9,7 @@ const schema = z.object({
   COVERAGE_FLOOR: z.coerce.number().min(0).max(1).default(0.8),
   ATTENDANCE_FLOOR: z.coerce.number().min(0).max(1).default(0.85),
   MISSING_CHECKIN_ALERT_TIME: z.string().regex(/^\d{2}:\d{2}$/).default("12:00"),
+  SESSION_IDLE_MINUTES: z.coerce.number().int().min(5).max(480).default(30),
   CHECKIN_REMINDER_TIME: z.string().regex(/^\d{2}:\d{2}$/).default("11:00"),
   APPROVAL_REMINDER_AFTER_DAYS: z.coerce.number().int().min(1).max(30).default(2),
   // Shared secret for the local job trigger. When unset the trigger is disabled.

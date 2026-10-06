@@ -115,6 +115,8 @@ function UserRow({ user: u, self, today, teams, onDone }: { user: User; self: bo
             <>
               <button type="button" className={buttonClass.smallSecondary} onClick={() => setMode("edit")} aria-label={`Edit ${u.displayName}`}>Edit</button>
               {!self && <button type="button" className={buttonClass.smallSecondary} onClick={() => setMode("deactivate")} aria-label={`Deactivate ${u.displayName}`}>Deactivate</button>}
+              {!self && <button type="button" className={buttonClass.smallSecondary} disabled={pending} aria-label={`Sign out ${u.displayName} everywhere`}
+                onClick={() => run(`/api/admin/users/${encodeURIComponent(u.id)}/sign-out-everywhere`, { body: {} }, `${u.displayName} has been signed out everywhere.`)}>Sign out everywhere</button>}
             </>
           )}
           {mode === "view" && !u.active && (
@@ -218,10 +220,10 @@ function CreateUser({ today, teams, onDone }: { today: string; teams: Team[]; on
       start(async () => {
         const email = form.email.trim() || undefined;
         const body = personnel ? { ...form, email } : { id: form.id, displayName: form.displayName, role: form.role, email };
-        const r = await api<{ id: string; personnelId: string | null }>("/api/admin/users", { body });
+        const r = await api<{ id: string; personnelId: string | null; pendingApproval: boolean }>("/api/admin/users", { body });
         if (!r.ok) return setError(r.message);
         setError(null); setForm(empty);
-        onDone(`Created ${r.data.id}${r.data.personnelId ? ` as ${r.data.personnelId}` : ""}.`);
+        onDone(r.data.pendingApproval ? `Created ${r.data.id}. A second administrator must approve before it can sign in.` : `Created ${r.data.id}${r.data.personnelId ? ` as ${r.data.personnelId}` : ""}.`);
         router.refresh();
       });
     }}>
