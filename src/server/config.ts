@@ -24,7 +24,10 @@ export type AppConfig = z.infer<typeof schema>;
 
 /** Read and validate configuration at the point of use, so a bad deploy fails loudly. */
 export function config(): AppConfig {
-  const parsed = schema.safeParse(process.env);
+  // An empty variable means "not set". Compose files pass `${X:-}` as "", which must not fail
+  // validation for optional settings or override a default.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined && v !== ""));
+  const parsed = schema.safeParse(env);
   if (!parsed.success) {
     const fields = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
     throw new Error(`Invalid configuration - ${fields}`);
